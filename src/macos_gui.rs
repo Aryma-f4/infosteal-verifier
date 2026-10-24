@@ -214,6 +214,7 @@ struct GuiHandles {
     btn_start: usize,
     lbl_valid: usize,
     lbl_invalid: usize,
+    lbl_rejected: usize,
     lbl_errors: usize,
     lbl_elapsed: usize,
     lbl_apm: usize,
@@ -480,6 +481,7 @@ fn refresh_gui() {
         let prx_cnt = st.proxies.lock().unwrap().len();
         let valid = st.valid.load(Ordering::SeqCst);
         let invalid = st.invalid.load(Ordering::SeqCst);
+        let rejected = st.rejected.load(Ordering::SeqCst);
         let errors = st.errors.load(Ordering::SeqCst);
         let checked = st.checked.load(Ordering::SeqCst);
         let total = st.total_accounts.load(Ordering::SeqCst);
@@ -534,6 +536,11 @@ fn refresh_gui() {
                 nsstring(&invalid.to_string()),
             );
             msg1_void_id(
+                h.lbl_rejected as *mut c_void,
+                "setStringValue:",
+                nsstring(&rejected.to_string()),
+            );
+            msg1_void_id(
                 h.lbl_errors as *mut c_void,
                 "setStringValue:",
                 nsstring(&errors.to_string()),
@@ -556,7 +563,7 @@ fn refresh_gui() {
             msg1_void_id(
                 h.lbl_progress as *mut c_void,
                 "setStringValue:",
-                nsstring(&format!("{}% - {}/{}", pct, checked, rem_accs)),
+                nsstring(&format!("{}% - {}/{}", pct, checked, total)),
             );
 
             let btn_title = if stopping {
@@ -572,7 +579,7 @@ fn refresh_gui() {
     }
 }
 
-pub fn run(state: Arc<EngineState>, preload: Option<String>) {
+pub fn run(state: Arc<EngineState>, preload: Option<String>, autostart: bool) {
     unsafe {
         let app = msg0_id(cls("NSApplication"), "sharedApplication");
         msg1_void_isize(app, "setActivationPolicy:", 0); // NSApplicationActivationPolicyRegular
@@ -845,8 +852,27 @@ pub fn run(state: Arc<EngineState>, preload: Option<String>) {
         msg1_void_id(right_card, "addSubview:", lbl_i_title);
         msg1_void_id(right_card, "addSubview:", lbl_invalid);
 
-        let lbl_e_title = make_label(
+        let lbl_r_title = make_label(
             NSRect::new(12.0, 146.0, 130.0, 18.0),
+            "Rejected locally:",
+            12.0,
+            false,
+            white,
+            0,
+        );
+        let lbl_rejected = make_label(
+            NSRect::new(145.0, 146.0, 104.0, 18.0),
+            "0",
+            12.0,
+            true,
+            white,
+            2,
+        );
+        msg1_void_id(right_card, "addSubview:", lbl_r_title);
+        msg1_void_id(right_card, "addSubview:", lbl_rejected);
+
+        let lbl_e_title = make_label(
+            NSRect::new(12.0, 126.0, 130.0, 18.0),
             "Count of errors:",
             12.0,
             false,
@@ -854,7 +880,7 @@ pub fn run(state: Arc<EngineState>, preload: Option<String>) {
             0,
         );
         let lbl_errors = make_label(
-            NSRect::new(145.0, 146.0, 104.0, 18.0),
+            NSRect::new(145.0, 126.0, 104.0, 18.0),
             "0",
             12.0,
             true,
@@ -866,12 +892,12 @@ pub fn run(state: Arc<EngineState>, preload: Option<String>) {
 
         let chart_view = init_frame(
             msg0_id(chart_cls, "alloc"),
-            NSRect::new(12.0, 10.0, 237.0, 130.0),
+            NSRect::new(12.0, 10.0, 237.0, 112.0),
         );
         msg1_void_id(right_card, "addSubview:", chart_view);
 
         let lbl_elapsed = make_label(
-            NSRect::new(6.0, 108.0, 70.0, 16.0),
+            NSRect::new(6.0, 90.0, 70.0, 16.0),
             "00:00:00",
             11.0,
             false,
@@ -879,7 +905,7 @@ pub fn run(state: Arc<EngineState>, preload: Option<String>) {
             0,
         );
         let lbl_apm = make_label(
-            NSRect::new(68.0, 108.0, 100.0, 16.0),
+            NSRect::new(68.0, 90.0, 100.0, 16.0),
             "accs/min: 0",
             11.0,
             false,
@@ -887,7 +913,7 @@ pub fn run(state: Arc<EngineState>, preload: Option<String>) {
             1,
         );
         let lbl_eta = make_label(
-            NSRect::new(160.0, 108.0, 70.0, 16.0),
+            NSRect::new(160.0, 90.0, 70.0, 16.0),
             "00:00:00",
             11.0,
             false,
@@ -916,6 +942,7 @@ pub fn run(state: Arc<EngineState>, preload: Option<String>) {
             btn_start: btn_start as usize,
             lbl_valid: lbl_valid as usize,
             lbl_invalid: lbl_invalid as usize,
+            lbl_rejected: lbl_rejected as usize,
             lbl_errors: lbl_errors as usize,
             lbl_elapsed: lbl_elapsed as usize,
             lbl_apm: lbl_apm as usize,
@@ -943,6 +970,14 @@ pub fn run(state: Arc<EngineState>, preload: Option<String>) {
             ptr::null_mut(),
             true,
         );
+
+        if autostart {
+            let st = Arc::clone(&state);
+            thread::spawn(move || {
+                thread::sleep(std::time::Duration::from_millis(500));
+                crate::start_workers(st);
+            });
+        }
 
         msg1_void_id(window, "makeKeyAndOrderFront:", ptr::null_mut());
         msg1_void_bool(app, "activateIgnoringOtherApps:", true);
