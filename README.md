@@ -11,7 +11,7 @@
 [![Platforms](https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows-blue?style=flat-square)](https://github.com/Aryma-f4/infosteal-verifier/releases/latest)
 [![License: MIT](https://img.shields.io/badge/License-MIT-2ea44f?style=flat-square)](LICENSE)
 
-**[⬇ Download v1.1.0](https://github.com/Aryma-f4/infosteal-verifier/releases/tag/v1.1.0)**
+**[⬇ Download v1.1.1](https://github.com/Aryma-f4/infosteal-verifier/releases/tag/v1.1.1)**
 
 </div>
 
