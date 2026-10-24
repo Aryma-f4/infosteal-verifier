@@ -11,7 +11,7 @@
 [![Platforms](https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows-blue?style=flat-square)](https://github.com/Aryma-f4/infosteal-verifier/releases/latest)
 [![License: MIT](https://img.shields.io/badge/License-MIT-2ea44f?style=flat-square)](LICENSE)
 
-**[⬇ Download v1.0.0](https://github.com/Aryma-f4/infosteal-verifier/releases/tag/v1.0.0)**
+**[⬇ Download v1.1.0](https://github.com/Aryma-f4/infosteal-verifier/releases/tag/v1.1.0)**
 
 </div>
 
@@ -123,18 +123,36 @@ infosteal-verifier \
 | `-u, --proxy-url <url>` | Fetch the proxy list from a URL. |
 | `-t, --proxy-type <type>` | `Http` \| `Socks4` \| `Socks5` (default `Http`). |
 | `-c, --threads <1..500>` | Concurrent workers (default `150`). |
+| `--parse-only` | Validate the account list and print a breakdown, without any request. |
+| `--preload <file>` | macOS GUI: open the window with an account list already loaded. |
 | `--self-test` | Run the built-in verification suite. |
 
 ---
 
 ## 📄 Input formats
 
-**Accounts** — either layout is accepted:
+**Accounts** — every one of these layouts is accepted:
 
 ```
-https://panel.example.com/wp-login.php admin:Pass123
-https://panel.example.com:8443/login:root:toor
+# scheme-less (how credential dumps are usually shaped)
+host.tld/path:user:pass
+host.tld:8443/path:user:pass
+
+# with scheme, colon separated
+https://host.tld/path:user:pass
+https://host.tld:8443/path:user:pass
+
+# with scheme, space separated
+https://host.tld/path user:pass
 ```
+
+- The scheme may be omitted; it defaults to `https://` and the request is
+  retried over `http://` when the TLS attempt cannot connect.
+- A port inside the target stays with the target.
+- The password may itself contain `:` and spaces.
+- A leading `://` that is not a real scheme (`chrome://`, `android://`, …) is
+  reported as `Invalid` rather than being requested.
+- Loopback and RFC1918 targets are skipped as `Invalid`.
 
 **Proxies** — one per line:
 
@@ -142,6 +160,27 @@ https://panel.example.com:8443/login:root:toor
 1.2.3.4:8080
 5.6.7.8:1080:user:pass
 ```
+
+### Validating a list before a run
+
+Large dumps are worth checking first. `--parse-only` loads the file, reports
+how many lines are usable targets and how they break down, then exits without
+sending a single request:
+
+```bash
+infosteal-verifier --accounts dump.txt --parse-only
+```
+
+```
+lines read      : 3495706
+usable targets  : 3476221
+rejected        : 19485
+  https (implicit)     3476220
+  http                 1
+```
+
+The file is streamed rather than read into memory, so a 227 MB / 3.5 million
+line dump loads in a few seconds and a few hundred megabytes of RAM.
 
 ---
 

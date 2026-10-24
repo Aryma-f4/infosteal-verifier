@@ -11,6 +11,7 @@ use std::process::Command;
 use std::ptr;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex, OnceLock};
+use std::thread;
 
 use crate::{format_hms, start_workers, EngineState, ProxyType};
 
@@ -233,12 +234,21 @@ extern "C" fn on_load_accounts(_this: *mut c_void, _cmd: *mut c_void, _sender: *
         if msg0_isize(panel, "runModal") == 1 {
             let url = msg0_id(panel, "URL");
             let path_str = from_nsstring(msg0_id(url, "path"));
-            if let Ok(content) = fs::read_to_string(&path_str) {
-                if let Some(lock) = GUI_HANDLES.get() {
-                    let h = lock.lock().unwrap();
-                    h.state.load_accounts_from_str(&content, true);
+            // A dump can be hundreds of megabytes: load it on a worker thread
+            // so the window keeps painting and the counter keeps ticking up.
+            let state = match GUI_HANDLES.get() {
+                Some(lock) => Arc::clone(&lock.lock().unwrap().state),
+                None => return,
+            };
+            thread::spawn(move || {
+                if let Err(e) = state.load_accounts_from_path(std::path::Path::new(&path_str)) {
+                    let msg = format!("Failed to read accounts file: {}", e);
+                    let alert = msg0_id(cls("NSAlert"), "alloc");
+                    init_frame(alert, NSRect::new(0.0, 0.0, 1.0, 1.0));
+                    msg1_void_id(alert, "setMessageText:", nsstring(&msg));
+                    msg0_void(alert, "runModal");
                 }
-            }
+            });
         }
     }
     refresh_gui();
@@ -466,6 +476,7 @@ fn refresh_gui() {
         let h = lock.lock().unwrap();
         let st = &h.state;
         let rem_accs = st.accounts.lock().unwrap().len();
+        let loaded = st.total_accounts.load(Ordering::SeqCst);
         let prx_cnt = st.proxies.lock().unwrap().len();
         let valid = st.valid.load(Ordering::SeqCst);
         let invalid = st.invalid.load(Ordering::SeqCst);
@@ -505,7 +516,7 @@ fn refresh_gui() {
             msg1_void_id(
                 h.btn_accounts as *mut c_void,
                 "setTitle:",
-                nsstring(&format!("Accounts | {}", rem_accs)),
+                nsstring(&format!("Accounts | {}", loaded)),
             );
             msg1_void_id(
                 h.btn_proxies as *mut c_void,
@@ -561,7 +572,7 @@ fn refresh_gui() {
     }
 }
 
-pub fn run(state: Arc<EngineState>) {
+pub fn run(state: Arc<EngineState>, preload: Option<String>) {
     unsafe {
         let app = msg0_id(cls("NSApplication"), "sharedApplication");
         msg1_void_isize(app, "setActivationPolicy:", 0); // NSApplicationActivationPolicyRegular
@@ -897,7 +908,7 @@ pub fn run(state: Arc<EngineState>) {
         msg1_void_id(chart_view, "addSubview:", lbl_progress);
 
         let _ = GUI_HANDLES.set(Mutex::new(GuiHandles {
-            state,
+            state: Arc::clone(&state),
             btn_accounts: btn_accounts as usize,
             btn_proxies: btn_proxies as usize,
             txt_threads: txt_threads as usize,
@@ -935,6 +946,16 @@ pub fn run(state: Arc<EngineState>) {
 
         msg1_void_id(window, "makeKeyAndOrderFront:", ptr::null_mut());
         msg1_void_bool(app, "activateIgnoringOtherApps:", true);
+
+        // Optionally preload an account list so the window opens with the
+        // dump already counted (the load runs on a worker thread).
+        if let Some(path) = preload {
+            let st = Arc::clone(&state);
+            thread::spawn(move || {
+                let _ = st.load_accounts_from_path(std::path::Path::new(&path));
+            });
+        }
+
         msg0_void(app, "run");
     }
 }

