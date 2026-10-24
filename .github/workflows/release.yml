@@ -1,0 +1,182 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to build and publish (e.g. v1.0.0)"
+        required: true
+        default: "v1.0.0"
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: "-C strip=symbols"
+
+jobs:
+  build:
+    name: ${{ matrix.artifact }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            artifact: macos-aarch64
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            artifact: macos-x86_64
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+            artifact: linux-x86_64
+          - os: ubuntu-latest
+            target: aarch64-unknown-linux-musl
+            artifact: linux-aarch64
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            artifact: windows-x86_64
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Install zig (musl cross-linker)
+        if: startsWith(matrix.target, 'aarch64-unknown-linux-musl')
+        run: |
+          python3 -m pip install --upgrade pip
+          python3 -m pip install ziglang
+          cargo install cargo-zigbuild --locked
+
+      - name: Build
+        shell: bash
+        run: |
+          if [[ "${{ matrix.target }}" == *musl ]]; then
+            cargo zigbuild --release --target "${{ matrix.target }}"
+          else
+            cargo build --release --locked --target "${{ matrix.target }}"
+          fi
+
+      - name: Self-test (macOS)
+        if: matrix.target == 'aarch64-apple-darwin'
+        run: cargo run --release -- --self-test
+
+      - name: Self-test (Linux x86_64)
+        if: matrix.target == 'x86_64-unknown-linux-musl'
+        run: ./target/${{ matrix.target }}/release/infosteal-verifier --self-test
+
+      - name: Self-test (Windows)
+        if: matrix.target == 'x86_64-pc-windows-msvc'
+        shell: bash
+        run: ./target/${{ matrix.target }}/release/infosteal-verifier.exe --self-test
+
+      - name: Package
+        shell: bash
+        run: ./scripts/package.sh "${{ matrix.target }}" "${{ matrix.artifact }}"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: dist/*
+          if-no-files-found: error
+
+  release:
+    name: Publish release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: List artifacts
+        run: ls -lh dist/
+
+      - name: Publish GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.inputs.tag || github.ref_name }}
+          name: ${{ github.event.inputs.tag || github.ref_name }}
+          generate_release_notes: true
+          body: |
+            ## infosteal-verifier ${{ github.event.inputs.tag || github.ref_name }}
+
+            Fast native credential verifier for admin panels / CMS targets.
+            Written in Rust with **zero third-party crates**.
+
+            | Platform | Artifact | Interface |
+            |---|---|---|
+            | macOS (Apple Silicon) | `infosteal-verifier-macos-aarch64.zip` | Native AppKit desktop GUI + CLI |
+            | macOS (Intel) | `infosteal-verifier-macos-x86_64.zip` | Native AppKit desktop GUI + CLI |
+            | Linux (x86_64) | `infosteal-verifier-linux-x86_64.tar.gz` | CLI (static musl) |
+            | Linux (aarch64) | `infosteal-verifier-linux-aarch64.tar.gz` | CLI (static musl) |
+            | Windows (x86_64) | `infosteal-verifier-windows-x86_64.zip` | CLI |
+
+            ### Install
+            ```bash
+            # macOS — native desktop app
+            unzip infosteal-verifier-macos-aarch64.zip && open AdminPanel.app
+
+            # Linux
+            tar -xzf infosteal-verifier-linux-x86_64.tar.gz && ./infosteal-verifier
+
+            # Windows
+            unzip infosteal-verifier-windows-x86_64.zip
+            ```
+
+            ### Quick start
+            ```bash
+            # headless batch run
+            infosteal-verifier --accounts accounts.txt --proxies proxies.txt --proxy-type socks5 --threads 150
+            ```
+
+            Account file format (either layout):
+            ```
+            https://panel.example.com/wp-login.php admin:Pass123
+            https://panel.example.com:8443/login:root:toor
+            ```
+
+            ### Supported panels
+            WordPress · phpMyAdmin · WHM · cPanel · Plesk · PrestaShop · Adminer ·
+            Joomla · Magento · Atlassian Confluence · Atlassian Jira · RDWeb ·
+            Synology DSM (QuickConnect) · ownCloud
+
+            ---
+            **Authorized use only.** Run this tool solely against systems you own or
+            have explicit written permission to test. The original reference build this
+            was reconstructed from contained a license C2 channel and a hardware
+            fingerprint collector; both are deliberately absent here.
+
+          files: dist/*
+
+  verify:
+    name: Verify release artifacts
+    needs: release
+    runs-on: ubuntu-latest
+    steps:
+      - name: List published assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="${{ github.event.inputs.tag || github.ref_name }}"
+          gh release view "$tag" --repo "${{ github.repository }}" \
+            --json tagName,name,assets \
+            --jq '{tag: .tagName, name: .name, assets: [.assets[] | {name: .name, size: .size}]}'

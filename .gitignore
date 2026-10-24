@@ -1,0 +1,17 @@
+/target
+**/*.rs.bk
+
+# Original reference binary (third-party commercial build — not redistributed here)
+/AdminPanel.exe
+AdminPanel.exe
+*.exe
+
+# Runtime output
+/Results/
+results/
+
+# macOS
+.DS_Store
+
+# Packaging output
+/dist/

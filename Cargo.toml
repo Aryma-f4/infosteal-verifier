@@ -1,0 +1,24 @@
+[package]
+name = "infosteal-verifier"
+version = "1.0.0"
+edition = "2021"
+rust-version = "1.74"
+description = "Fast native credential verifier for admin panels and CMS targets. Rust, zero runtime dependencies."
+license = "MIT"
+repository = "https://github.com/Aryma-f4/infosteal-verifier"
+readme = "README.md"
+keywords = ["security", "red-team", "credential", "admin-panel", "pentest"]
+categories = ["command-line-utilities"]
+
+[[bin]]
+name = "infosteal-verifier"
+path = "src/main.rs"
+
+# ponytail: zero third-party crates. HTTP via /usr/bin/curl, GUI via native AppKit FFI.
+[dependencies]
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true
