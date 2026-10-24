@@ -225,3 +225,9 @@ violate the target's terms of service. Use rate limits that respect the target's
 ## 📄 License
 
 MIT — see [LICENSE](LICENSE).
+
+---
+
+## 👤 Author
+
+**Aryma-f4** — <https://github.com/Aryma-f4>
