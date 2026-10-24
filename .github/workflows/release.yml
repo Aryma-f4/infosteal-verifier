@@ -66,7 +66,7 @@ jobs:
       - name: Build
         shell: bash
         run: |
-          if [[ "${{ matrix.target }}" == *musl ]]; then
+          if [[ "${{ matrix.target }}" == "aarch64-unknown-linux-musl" ]]; then
             cargo zigbuild --release --target "${{ matrix.target }}"
           else
             cargo build --release --locked --target "${{ matrix.target }}"
