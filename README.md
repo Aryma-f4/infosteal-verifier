@@ -11,7 +11,7 @@
 [![Platforms](https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows-blue?style=flat-square)](https://github.com/Aryma-f4/infosteal-verifier/releases/latest)
 [![License: MIT](https://img.shields.io/badge/License-MIT-2ea44f?style=flat-square)](LICENSE)
 
-**[⬇ Download v1.1.1](https://github.com/Aryma-f4/infosteal-verifier/releases/tag/v1.1.1)**
+**[⬇ Download v1.2.0](https://github.com/Aryma-f4/infosteal-verifier/releases/tag/v1.2.0)**
 
 </div>
 
@@ -126,6 +126,8 @@ infosteal-verifier \
 | `--parse-only` | Validate the account list and print a breakdown, without any request. |
 | `--preload <file>` | macOS GUI: open the window with an account list already loaded. |
 | `--autostart` | Start checking as soon as the list is loaded. |
+| `--log-http` | Capture the raw HTTP conversation of every request. |
+| `--log-limit <n>` | Maximum captured requests (default `200`, `0` = unlimited). |
 | `--self-test` | Run the built-in verification suite. |
 
 ---
@@ -161,6 +163,48 @@ https://host.tld/path user:pass
 1.2.3.4:8080
 5.6.7.8:1080:user:pass
 ```
+
+### HTTP request / response history
+
+`--log-http` (or the **Log HTTP requests** checkbox in the GUI) captures the exact
+wire conversation of every request — the request line, every request header, the
+request body, the response status line, every response header and the response
+body — plus the `CONNECT` exchange when a proxy is used.
+
+It lands next to the results, so the **Results** button opens both:
+
+```
+~/AdminPanel-Results/run_<timestamp> - <n> bases/
+├── Good_WordPress.txt …
+├── Error.txt
+└── http/
+    ├── index.log                       seq · method · url · proxy · status · outcome
+    ├── 000000-example.com.txt         full trace of request #0
+    ├── 000001-example.com_login.txt   full trace of request #1
+    └── …
+```
+
+A trace reads like this:
+
+```
+=> Send header, 388 bytes (0x184)
+0000: POST /login?login_only=1 HTTP/1.1
+0023: Host: [::1]:57585
+00d6: Cookie: cpanel_login=abc123DEF
+00f6: Content-Type: application/x-www-form-urlencoded
+016e: Content-Length: 34
+=> Send data, 34 bytes (0x22)
+0000: user=root&pass=secret&goto_uri=%2F
+<= Recv header, 17 bytes (0x11)
+0000: HTTP/1.1 200 OK
+<= Recv header, 40 bytes (0x28)
+0000: Content-Type: text/html; charset=utf-8
+<= Recv data, 83 bytes (0x53)
+0000: <html><title>WHM Login</title>…
+```
+
+This is the fastest way to see why a panel was not recognised — the detection
+strings it looks for are all visible in the response body.
 
 ### Reading the counters
 

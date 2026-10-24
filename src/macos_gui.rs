@@ -211,6 +211,7 @@ struct GuiHandles {
     btn_proxies: usize,
     txt_threads: usize,
     txt_proxy_url: usize,
+    chk_log: usize,
     btn_start: usize,
     lbl_valid: usize,
     lbl_invalid: usize,
@@ -312,6 +313,16 @@ extern "C" fn on_start_stop(_this: *mut c_void, _cmd: *mut c_void, _sender: *mut
         }
     }
     refresh_gui();
+}
+
+extern "C" fn on_toggle_log(_this: *mut c_void, _cmd: *mut c_void, sender: *mut c_void) {
+    unsafe {
+        let on = msg0_isize(sender, "state") == 1;
+        if let Some(lock) = GUI_HANDLES.get() {
+            let h = lock.lock().unwrap();
+            h.state.http_logging.store(on, Ordering::SeqCst);
+        }
+    }
 }
 
 extern "C" fn on_open_folder(_this: *mut c_void, _cmd: *mut c_void, _sender: *mut c_void) {
@@ -525,6 +536,18 @@ fn refresh_gui() {
                 "setTitle:",
                 nsstring(&format!("Proxies | {}", prx_cnt)),
             );
+            let logged = st
+                .http_logger
+                .lock()
+                .unwrap()
+                .as_ref()
+                .map(|l| l.written_count())
+                .unwrap_or(0);
+            msg1_void_id(
+                h.chk_log as *mut c_void,
+                "setTitle:",
+                nsstring(&format!("Log HTTP requests ({})", logged)),
+            );
             msg1_void_id(
                 h.lbl_valid as *mut c_void,
                 "setStringValue:",
@@ -622,6 +645,12 @@ pub fn run(state: Arc<EngineState>, preload: Option<String>, autostart: bool) {
             ctrl_cls,
             sel("onStartStop:"),
             on_start_stop as *const c_void,
+            b"v@:@\0".as_ptr() as *const c_char,
+        );
+        class_addMethod(
+            ctrl_cls,
+            sel("onToggleLog:"),
+            on_toggle_log as *const c_void,
             b"v@:@\0".as_ptr() as *const c_char,
         );
         class_addMethod(
@@ -731,7 +760,7 @@ pub fn run(state: Arc<EngineState>, preload: Option<String>, autostart: bool) {
         msg1_void_id(left_card, "addSubview:", btn_proxies);
 
         let lbl_settings = make_label(
-            NSRect::new(12.0, 126.0, 211.0, 18.0),
+            NSRect::new(12.0, 130.0, 211.0, 18.0),
             "───  Settings  ───",
             11.0,
             false,
@@ -742,7 +771,7 @@ pub fn run(state: Arc<EngineState>, preload: Option<String>, autostart: bool) {
 
         let seg_proxy = init_frame(
             msg0_id(cls("NSSegmentedControl"), "alloc"),
-            NSRect::new(10.0, 98.0, 215.0, 24.0),
+            NSRect::new(10.0, 104.0, 215.0, 24.0),
         );
         msg1_void_isize(seg_proxy, "setSegmentCount:", 3);
         let f_seg_lbl: extern "C" fn(*mut c_void, *mut c_void, *mut c_void, isize) =
@@ -756,7 +785,7 @@ pub fn run(state: Arc<EngineState>, preload: Option<String>, autostart: bool) {
         msg1_void_id(left_card, "addSubview:", seg_proxy);
 
         let lbl_threads = make_label(
-            NSRect::new(12.0, 70.0, 115.0, 18.0),
+            NSRect::new(12.0, 78.0, 115.0, 18.0),
             "Count of threads:",
             12.0,
             false,
@@ -767,14 +796,14 @@ pub fn run(state: Arc<EngineState>, preload: Option<String>, autostart: bool) {
 
         let txt_threads = init_frame(
             msg0_id(cls("NSTextField"), "alloc"),
-            NSRect::new(135.0, 68.0, 88.0, 22.0),
+            NSRect::new(135.0, 76.0, 88.0, 22.0),
         );
         msg1_void_id(txt_threads, "setStringValue:", nsstring("150"));
         msg1_void_id(left_card, "addSubview:", txt_threads);
 
         let txt_proxy_url = init_frame(
             msg0_id(cls("NSTextField"), "alloc"),
-            NSRect::new(12.0, 40.0, 211.0, 22.0),
+            NSRect::new(12.0, 48.0, 211.0, 22.0),
         );
         msg1_void_id(
             txt_proxy_url,
@@ -783,8 +812,18 @@ pub fn run(state: Arc<EngineState>, preload: Option<String>, autostart: bool) {
         );
         msg1_void_id(left_card, "addSubview:", txt_proxy_url);
 
+        let chk_log = init_frame(
+            msg0_id(cls("NSButton"), "alloc"),
+            NSRect::new(12.0, 28.0, 211.0, 18.0),
+        );
+        msg1_void_isize(chk_log, "setButtonType:", 3); // NSButtonTypeCheckbox
+        msg1_void_id(chk_log, "setTitle:", nsstring("Log HTTP requests"));
+        msg1_void_id(chk_log, "setTarget:", controller);
+        msg1_void_id(chk_log, "setAction:", sel("onToggleLog:"));
+        msg1_void_id(left_card, "addSubview:", chk_log);
+
         let btn_start = make_button(
-            NSRect::new(10.0, 8.0, 215.0, 28.0),
+            NSRect::new(10.0, 2.0, 215.0, 26.0),
             "Start",
             controller,
             "onStartStop:",
@@ -939,6 +978,7 @@ pub fn run(state: Arc<EngineState>, preload: Option<String>, autostart: bool) {
             btn_proxies: btn_proxies as usize,
             txt_threads: txt_threads as usize,
             txt_proxy_url: txt_proxy_url as usize,
+            chk_log: chk_log as usize,
             btn_start: btn_start as usize,
             lbl_valid: lbl_valid as usize,
             lbl_invalid: lbl_invalid as usize,

