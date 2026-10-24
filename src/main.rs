@@ -1976,6 +1976,7 @@ fn main() {
     let mut cli_mode = false;
     let mut parse_only = false;
     let mut preload: Option<String> = None;
+    let mut unknown: Vec<String> = Vec::new();
 
     let mut i = 1;
     while i < args.len() {
@@ -2015,9 +2016,22 @@ fn main() {
                 print_help();
                 return;
             }
+            "--version" | "-V" => {
+                println!("infosteal-verifier {}", env!("CARGO_PKG_VERSION"));
+                return;
+            }
+            a if a.starts_with('-') => {
+                unknown.push(a.to_string());
+            }
             _ => {}
         }
         i += 1;
+    }
+
+    if !unknown.is_empty() {
+        eprintln!("error: unknown option(s): {}", unknown.join(", "));
+        print_help();
+        std::process::exit(2);
     }
 
     if let Some(u) = proxy_url {
