@@ -315,6 +315,17 @@ extern "C" fn on_start_stop(_this: *mut c_void, _cmd: *mut c_void, _sender: *mut
     refresh_gui();
 }
 
+extern "C" fn on_toggle_skip_big(_this: *mut c_void, _cmd: *mut c_void, sender: *mut c_void) {
+    unsafe {
+        let on = msg0_isize(sender, "state") == 1;
+        if let Some(lock) = GUI_HANDLES.get() {
+            let h = lock.lock().unwrap();
+            h.state.skip_big_platforms.store(on, Ordering::SeqCst);
+        }
+    }
+    refresh_gui();
+}
+
 extern "C" fn on_toggle_log(_this: *mut c_void, _cmd: *mut c_void, sender: *mut c_void) {
     unsafe {
         let on = msg0_isize(sender, "state") == 1;
@@ -649,6 +660,12 @@ pub fn run(state: Arc<EngineState>, preload: Option<String>, autostart: bool) {
         );
         class_addMethod(
             ctrl_cls,
+            sel("onToggleSkipBig:"),
+            on_toggle_skip_big as *const c_void,
+            b"v@:@\0".as_ptr() as *const c_char,
+        );
+        class_addMethod(
+            ctrl_cls,
             sel("onToggleLog:"),
             on_toggle_log as *const c_void,
             b"v@:@\0".as_ptr() as *const c_char,
@@ -698,7 +715,7 @@ pub fn run(state: Arc<EngineState>, preload: Option<String>, autostart: bool) {
         objc_registerClassPair(chart_cls);
 
         // ---- Main window ----
-        let win_rect = NSRect::new(0.0, 0.0, 530.0, 268.0);
+        let win_rect = NSRect::new(0.0, 0.0, 530.0, 290.0);
         let style_mask: usize = (1 << 0) | (1 << 1) | (1 << 2); // Titled | Closable | Miniaturizable
         let f_win_init: extern "C" fn(
             *mut c_void,
@@ -730,11 +747,11 @@ pub fn run(state: Arc<EngineState>, preload: Option<String>, autostart: bool) {
         let mint_green = nscolor_rgba(0.071, 0.922, 0.565, 1.0); // #12eb90
 
         // ---------------- Left card: Resources & Settings ----------------
-        let left_card = init_frame(msg0_id(card_cls, "alloc"), NSRect::new(12.0, 12.0, 235.0, 244.0));
+        let left_card = init_frame(msg0_id(card_cls, "alloc"), NSRect::new(12.0, 12.0, 235.0, 266.0));
         msg1_void_id(content_view, "addSubview:", left_card);
 
         let lbl_res = make_label(
-            NSRect::new(12.0, 214.0, 200.0, 20.0),
+            NSRect::new(12.0, 236.0, 200.0, 20.0),
             "Resources",
             13.0,
             true,
@@ -744,7 +761,7 @@ pub fn run(state: Arc<EngineState>, preload: Option<String>, autostart: bool) {
         msg1_void_id(left_card, "addSubview:", lbl_res);
 
         let btn_accounts = make_button(
-            NSRect::new(10.0, 180.0, 215.0, 28.0),
+            NSRect::new(10.0, 202.0, 215.0, 28.0),
             "Accounts | 0",
             controller,
             "onLoadAccounts:",
@@ -752,7 +769,7 @@ pub fn run(state: Arc<EngineState>, preload: Option<String>, autostart: bool) {
         msg1_void_id(left_card, "addSubview:", btn_accounts);
 
         let btn_proxies = make_button(
-            NSRect::new(10.0, 150.0, 215.0, 28.0),
+            NSRect::new(10.0, 172.0, 215.0, 28.0),
             "Proxies | 0",
             controller,
             "onLoadProxies:",
@@ -760,7 +777,7 @@ pub fn run(state: Arc<EngineState>, preload: Option<String>, autostart: bool) {
         msg1_void_id(left_card, "addSubview:", btn_proxies);
 
         let lbl_settings = make_label(
-            NSRect::new(12.0, 130.0, 211.0, 18.0),
+            NSRect::new(12.0, 152.0, 211.0, 18.0),
             "───  Settings  ───",
             11.0,
             false,
@@ -771,7 +788,7 @@ pub fn run(state: Arc<EngineState>, preload: Option<String>, autostart: bool) {
 
         let seg_proxy = init_frame(
             msg0_id(cls("NSSegmentedControl"), "alloc"),
-            NSRect::new(10.0, 104.0, 215.0, 24.0),
+            NSRect::new(10.0, 126.0, 215.0, 24.0),
         );
         msg1_void_isize(seg_proxy, "setSegmentCount:", 3);
         let f_seg_lbl: extern "C" fn(*mut c_void, *mut c_void, *mut c_void, isize) =
@@ -785,7 +802,7 @@ pub fn run(state: Arc<EngineState>, preload: Option<String>, autostart: bool) {
         msg1_void_id(left_card, "addSubview:", seg_proxy);
 
         let lbl_threads = make_label(
-            NSRect::new(12.0, 78.0, 115.0, 18.0),
+            NSRect::new(12.0, 100.0, 115.0, 18.0),
             "Count of threads:",
             12.0,
             false,
@@ -796,14 +813,14 @@ pub fn run(state: Arc<EngineState>, preload: Option<String>, autostart: bool) {
 
         let txt_threads = init_frame(
             msg0_id(cls("NSTextField"), "alloc"),
-            NSRect::new(135.0, 76.0, 88.0, 22.0),
+            NSRect::new(135.0, 98.0, 88.0, 22.0),
         );
         msg1_void_id(txt_threads, "setStringValue:", nsstring("150"));
         msg1_void_id(left_card, "addSubview:", txt_threads);
 
         let txt_proxy_url = init_frame(
             msg0_id(cls("NSTextField"), "alloc"),
-            NSRect::new(12.0, 48.0, 211.0, 22.0),
+            NSRect::new(12.0, 70.0, 211.0, 22.0),
         );
         msg1_void_id(
             txt_proxy_url,
@@ -811,6 +828,29 @@ pub fn run(state: Arc<EngineState>, preload: Option<String>, autostart: bool) {
             nsstring("Address for proxy"),
         );
         msg1_void_id(left_card, "addSubview:", txt_proxy_url);
+
+        let chk_skip_big = init_frame(
+            msg0_id(cls("NSButton"), "alloc"),
+            NSRect::new(12.0, 48.0, 215.0, 18.0),
+        );
+        msg1_void_isize(chk_skip_big, "setButtonType:", 3); // NSButtonTypeCheckbox
+        msg1_void_id(
+            chk_skip_big,
+            "setTitle:",
+            nsstring("Skip big platforms (FB, ChatGPT)"),
+        );
+        msg1_void_isize(
+            chk_skip_big,
+            "setState:",
+            if state.skip_big_platforms.load(Ordering::SeqCst) {
+                1
+            } else {
+                0
+            },
+        );
+        msg1_void_id(chk_skip_big, "setTarget:", controller);
+        msg1_void_id(chk_skip_big, "setAction:", sel("onToggleSkipBig:"));
+        msg1_void_id(left_card, "addSubview:", chk_skip_big);
 
         let chk_log = init_frame(
             msg0_id(cls("NSButton"), "alloc"),
@@ -832,11 +872,11 @@ pub fn run(state: Arc<EngineState>, preload: Option<String>, autostart: bool) {
         msg1_void_id(left_card, "addSubview:", btn_start);
 
         // ---------------- Right card: Statistic & LiveChart ----------------
-        let right_card = init_frame(msg0_id(card_cls, "alloc"), NSRect::new(257.0, 12.0, 261.0, 244.0));
+        let right_card = init_frame(msg0_id(card_cls, "alloc"), NSRect::new(257.0, 12.0, 261.0, 266.0));
         msg1_void_id(content_view, "addSubview:", right_card);
 
         let lbl_stat = make_label(
-            NSRect::new(12.0, 214.0, 150.0, 20.0),
+            NSRect::new(12.0, 236.0, 150.0, 20.0),
             "Statistic",
             13.0,
             true,
@@ -846,7 +886,7 @@ pub fn run(state: Arc<EngineState>, preload: Option<String>, autostart: bool) {
         msg1_void_id(right_card, "addSubview:", lbl_stat);
 
         let btn_folder = make_button(
-            NSRect::new(182.0, 212.0, 70.0, 24.0),
+            NSRect::new(182.0, 234.0, 70.0, 24.0),
             "Results",
             controller,
             "onOpenFolder:",
@@ -854,7 +894,7 @@ pub fn run(state: Arc<EngineState>, preload: Option<String>, autostart: bool) {
         msg1_void_id(right_card, "addSubview:", btn_folder);
 
         let lbl_v_title = make_label(
-            NSRect::new(12.0, 186.0, 130.0, 18.0),
+            NSRect::new(12.0, 208.0, 130.0, 18.0),
             "Count of valid:",
             12.0,
             false,
@@ -862,7 +902,7 @@ pub fn run(state: Arc<EngineState>, preload: Option<String>, autostart: bool) {
             0,
         );
         let lbl_valid = make_label(
-            NSRect::new(145.0, 186.0, 104.0, 18.0),
+            NSRect::new(145.0, 208.0, 104.0, 18.0),
             "0",
             12.0,
             true,
@@ -873,7 +913,7 @@ pub fn run(state: Arc<EngineState>, preload: Option<String>, autostart: bool) {
         msg1_void_id(right_card, "addSubview:", lbl_valid);
 
         let lbl_i_title = make_label(
-            NSRect::new(12.0, 166.0, 130.0, 18.0),
+            NSRect::new(12.0, 188.0, 130.0, 18.0),
             "Count of invalid:",
             12.0,
             false,
@@ -881,7 +921,7 @@ pub fn run(state: Arc<EngineState>, preload: Option<String>, autostart: bool) {
             0,
         );
         let lbl_invalid = make_label(
-            NSRect::new(145.0, 166.0, 104.0, 18.0),
+            NSRect::new(145.0, 188.0, 104.0, 18.0),
             "0",
             12.0,
             true,
@@ -892,7 +932,7 @@ pub fn run(state: Arc<EngineState>, preload: Option<String>, autostart: bool) {
         msg1_void_id(right_card, "addSubview:", lbl_invalid);
 
         let lbl_r_title = make_label(
-            NSRect::new(12.0, 146.0, 130.0, 18.0),
+            NSRect::new(12.0, 168.0, 130.0, 18.0),
             "Rejected locally:",
             12.0,
             false,
@@ -900,7 +940,7 @@ pub fn run(state: Arc<EngineState>, preload: Option<String>, autostart: bool) {
             0,
         );
         let lbl_rejected = make_label(
-            NSRect::new(145.0, 146.0, 104.0, 18.0),
+            NSRect::new(145.0, 168.0, 104.0, 18.0),
             "0",
             12.0,
             true,
@@ -911,7 +951,7 @@ pub fn run(state: Arc<EngineState>, preload: Option<String>, autostart: bool) {
         msg1_void_id(right_card, "addSubview:", lbl_rejected);
 
         let lbl_e_title = make_label(
-            NSRect::new(12.0, 126.0, 130.0, 18.0),
+            NSRect::new(12.0, 148.0, 130.0, 18.0),
             "Count of errors:",
             12.0,
             false,
@@ -919,7 +959,7 @@ pub fn run(state: Arc<EngineState>, preload: Option<String>, autostart: bool) {
             0,
         );
         let lbl_errors = make_label(
-            NSRect::new(145.0, 126.0, 104.0, 18.0),
+            NSRect::new(145.0, 148.0, 104.0, 18.0),
             "0",
             12.0,
             true,
@@ -931,12 +971,12 @@ pub fn run(state: Arc<EngineState>, preload: Option<String>, autostart: bool) {
 
         let chart_view = init_frame(
             msg0_id(chart_cls, "alloc"),
-            NSRect::new(12.0, 10.0, 237.0, 112.0),
+            NSRect::new(12.0, 10.0, 237.0, 132.0),
         );
         msg1_void_id(right_card, "addSubview:", chart_view);
 
         let lbl_elapsed = make_label(
-            NSRect::new(6.0, 90.0, 70.0, 16.0),
+            NSRect::new(6.0, 110.0, 70.0, 16.0),
             "00:00:00",
             11.0,
             false,
@@ -944,7 +984,7 @@ pub fn run(state: Arc<EngineState>, preload: Option<String>, autostart: bool) {
             0,
         );
         let lbl_apm = make_label(
-            NSRect::new(68.0, 90.0, 100.0, 16.0),
+            NSRect::new(68.0, 110.0, 100.0, 16.0),
             "accs/min: 0",
             11.0,
             false,
@@ -952,7 +992,7 @@ pub fn run(state: Arc<EngineState>, preload: Option<String>, autostart: bool) {
             1,
         );
         let lbl_eta = make_label(
-            NSRect::new(160.0, 90.0, 70.0, 16.0),
+            NSRect::new(160.0, 110.0, 70.0, 16.0),
             "00:00:00",
             11.0,
             false,

