@@ -157,7 +157,8 @@ jobs:
             ### Supported panels
             WordPress · phpMyAdmin · WHM · cPanel · Plesk · PrestaShop · Adminer ·
             Joomla · Magento · Atlassian Confluence · Atlassian Jira · RDWeb ·
-            Synology DSM (QuickConnect) · ownCloud
+            Synology DSM (QuickConnect) · ownCloud · Custom / General HTML & JSON Admin Panels
+            (plus built-in big-platform filter for ChatGPT/OpenAI, Facebook/Meta, Google, etc.)
 
             ---
             **Authorized use only.** Run this tool solely against systems you own or
